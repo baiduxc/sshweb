@@ -1,0 +1,10 @@
+.git
+.github
+docs
+data
+*.tar.gz
+LICENSE
+README.md
+SECURITY.md
+Dockerfile
+docker-compose.yml

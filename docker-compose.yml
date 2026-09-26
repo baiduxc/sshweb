@@ -1,0 +1,15 @@
+services:
+  sshweb:
+    image: ghcr.io/baiduxc/sshweb:latest
+    container_name: sshweb
+    restart: unless-stopped
+    ports:
+      - "45678:45678"
+    environment:
+      # 首次启动的管理密码；改密码后以数据卷里的 data.json 为准
+      SSHWEB_PASSWORD: ${SSHWEB_PASSWORD:-}
+    volumes:
+      - sshweb-data:/data
+
+volumes:
+  sshweb-data:

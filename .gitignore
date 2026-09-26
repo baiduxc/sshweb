@@ -1,0 +1,5 @@
+sshweb
+sshweb-*
+data/
+*.tar.gz
+.DS_Store
