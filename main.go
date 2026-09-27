@@ -25,7 +25,7 @@ import (
 //go:embed all:web
 var embeddedWeb embed.FS
 
-var version = "0.2.0"
+var version = "0.3.0"
 
 // ---------------- 数据模型 ----------------
 
@@ -45,11 +45,158 @@ type Server struct {
 	CreatedAt  time.Time `json:"createdAt"`
 }
 
+type FarmPlayer struct {
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Materials int    `json:"materials"`
+	LastBonus string `json:"lastBonus,omitempty"` // 最近一次探针奖励日期 YYYY-MM-DD
+	IP        string `json:"ip"`
+	CreatedAt string `json:"createdAt,omitempty"`
+}
+
 type Store struct {
-	mu       sync.Mutex
-	path     string
-	Password string
-	Servers  []*Server
+	mu        sync.Mutex
+	path      string
+	Password  string
+	Servers   []*Server
+	Blocks    map[string]string      `json:"blocks,omitempty"` // "x,y,z" -> dirt|wood|stone|-
+	ProbeList []*Probe               `json:"probes,omitempty"`
+	Players   map[string]*FarmPlayer `json:"players,omitempty"` // ip -> player
+}
+
+// GetOrCreatePlayer 按 IP 深度绑定玩家身份：同一 IP 下次进来资源/名字还在
+func (s *Store) GetOrCreatePlayer(ip string) *FarmPlayer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Players == nil {
+		s.Players = map[string]*FarmPlayer{}
+	}
+	if p, ok := s.Players[ip]; ok {
+		return p
+	}
+	b := make([]byte, 2)
+	rand.Read(b)
+	p := &FarmPlayer{
+		ID:        newID()[:10],
+		Name:      fmt.Sprintf("农夫-%s", hex.EncodeToString(b)),
+		Materials: 50,
+		IP:        ip,
+		CreatedAt: time.Now().Format(time.RFC3339),
+	}
+	s.Players[ip] = p
+	go s.save()
+	return p
+}
+
+func (s *Store) PlayerByIP(ip string) *FarmPlayer {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.Players == nil {
+		return nil
+	}
+	return s.Players[ip]
+}
+
+func (s *Store) SaveAsync() { go s.save() }
+
+// ColumnTop 返回某列 (x,z) 最高方块顶面 y（无方块为 0）
+func (s *Store) ColumnTop(x, z int) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	top := 0
+	prefix1 := fmt.Sprintf("%d,", x)
+	for k, v := range s.Blocks {
+		if v == "-" || v == "" {
+			continue
+		}
+		var bx, by, bz int
+		if _, err := fmt.Sscanf(k, "%d,%d,%d", &bx, &by, &bz); err == nil && bx == x && bz == z && by+1 > top {
+			top = by + 1
+		}
+	}
+	_ = prefix1
+	return top
+}
+
+func (s *Store) Probes() []*Probe {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*Probe, len(s.ProbeList))
+	copy(out, s.ProbeList)
+	return out
+}
+
+func (s *Store) AddProbe(pr *Probe) {
+	s.mu.Lock()
+	s.ProbeList = append(s.ProbeList, pr)
+	s.mu.Unlock()
+	go s.save()
+}
+
+func (s *Store) DeleteProbe(id string) {
+	s.mu.Lock()
+	out := s.ProbeList[:0]
+	for _, v := range s.ProbeList {
+		if v.ID != id {
+			out = append(out, v)
+		}
+	}
+	s.ProbeList = out
+	s.mu.Unlock()
+	go s.save()
+}
+
+func (s *Store) ProbeByToken(token string) *Probe {
+	if token == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.ProbeList {
+		if v.Token == token {
+			return v
+		}
+	}
+	return nil
+}
+
+func (s *Store) ProbeByID(id string) *Probe {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, v := range s.ProbeList {
+		if v.ID == id {
+			return v
+		}
+	}
+	return nil
+}
+
+func (s *Store) BlocksCopy() map[string]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make(map[string]string, len(s.Blocks))
+	for k, v := range s.Blocks {
+		if v != "-" {
+			out[k] = v
+		}
+	}
+	return out
+}
+
+func (s *Store) BlockGet(key string) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.Blocks[key]
+}
+
+func (s *Store) SetBlock(key, val string) {
+	s.mu.Lock()
+	if s.Blocks == nil {
+		s.Blocks = map[string]string{}
+	}
+	s.Blocks[key] = val
+	s.mu.Unlock()
+	go s.save()
 }
 
 func loadStore(dir string) (*Store, error) {
@@ -186,6 +333,8 @@ type App struct {
 	sessions *Sessions
 	pool     *sshx.Pool
 	upgrader websocket.Upgrader
+	game     *gameHub
+	probes   *probeRuntime
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {
@@ -428,6 +577,9 @@ func main() {
 		pool:     sshx.NewPool(),
 		upgrader: websocket.Upgrader{CheckOrigin: func(r *http.Request) bool { return true }},
 	}
+	app.probes = newProbeRuntime()
+	app.game = newGameHub(store)
+	app.game.probeRT = app.probes
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/login", app.handleLogin)
@@ -437,6 +589,16 @@ func main() {
 	mux.HandleFunc("/api/servers", app.require(app.handleServers))
 	mux.HandleFunc("/api/servers/", app.require(app.handleServerOne))
 	mux.HandleFunc("/ws/terminal", app.handleTerminal)
+	mux.HandleFunc("/ws/game", app.handleGameWS)
+	mux.HandleFunc("/api/farm/public", app.handleFarmPublic)
+	mux.HandleFunc("/api/probe/join", app.handleProbeJoin)
+	mux.HandleFunc("/api/probes", app.require(app.handleProbes))
+	mux.HandleFunc("/api/probe/report", app.handleProbeReport)
+	mux.HandleFunc("/api/probe/unlock", app.handleProbeUnlock)
+	mux.HandleFunc("/api/probe/unlockpass", app.handleProbeUnlockPass)
+	mux.HandleFunc("/api/probes/public", app.handleProbesPublic)
+	mux.HandleFunc("/probe/agent.sh", app.handleProbeAgentScript)
+	mux.HandleFunc("/probe/uninstall.sh", app.handleProbeUninstallScript)
 
 	webFS, _ := fs.Sub(embeddedWeb, "web")
 	fileServer := http.FileServer(http.FS(webFS))

@@ -1,115 +1,108 @@
 <!DOCTYPE html>
-<html lang="zh-CN" data-theme="light">
+<html lang="zh-CN">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>SSH 服务器管理</title>
+<title>SSHWEB · 我的农场</title>
 <link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="vendor/xterm.css">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- 登录：左品牌区 + 右表单 -->
+<!-- 登录：Minecraft 标题屏风格 -->
 <div id="login" class="login-wrap hidden">
-  <section class="login-hero">
-    <div class="lh-brand">
-      <svg width="34" height="34" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 7 10.5 25 16 12.5 21.5 25 27 7" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg>
-      <span>SSHWEB</span>
+  <div class="mc-title">
+    <h1>SSH<span>WEB</span></h1>
+    <div class="mc-subtitle">我的农场 · 服务器牧场版</div>
+  </div>
+  <div class="mc-menu">
+    <div class="mc-field">
+      <input id="loginPass" type="password" autocomplete="current-password" placeholder="管理密码">
+      <button class="mc-eye" id="loginEye" type="button" title="显示/隐藏密码">👁</button>
     </div>
-    <h1>一台浏览器<br>管全部服务器</h1>
-    <p class="lh-sub">多主机管理 · 网页终端 · 快捷键全透传，vim / htop 直接跑。</p>
-    <div class="lh-term" aria-hidden="true">
-      <div class="lh-term-bar"><i></i><i></i><i></i><span>ubuntu@prod-01 ~</span></div>
-      <div class="lh-term-body">
-        <div><em>$</em> sshweb connect prod-01</div>
-        <div class="ok">✓ 已连接 · Linux 6.8 · load 0.12</div>
-        <div><em>$</em> kubectl get pods -A</div>
-        <div class="dim">NAME&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;READY&nbsp;&nbsp;STATUS&nbsp;&nbsp;&nbsp;&nbsp;AGE</div>
-        <div class="dim">gateway&nbsp;&nbsp;&nbsp;&nbsp;1/1&nbsp;&nbsp;&nbsp;&nbsp;<span class="run">Running</span>&nbsp;&nbsp;3d</div>
-        <div><em>$</em> <span class="caret"></span></div>
-      </div>
-    </div>
-    <ul class="lh-feats">
-      <li>密码 / SSH 私钥双认证，凭据本机 0600 保存</li>
-      <li>真 PTY 交互终端，窗口自适应、断线一键重连</li>
-      <li>手机软键盘辅助条，随时随地应急运维</li>
-    </ul>
-  </section>
-  <section class="login-side">
-    <div class="login-card">
-      <div class="eyebrow">SSHWEB · SECURE SHELL</div>
-      <h2>登录面板</h2>
-      <p class="sub">输入管理密码进入</p>
-      <div class="field">
-        <label for="loginPass">管理密码</label>
-        <input id="loginPass" type="password" autocomplete="current-password" placeholder="请输入密码">
-      </div>
-      <div id="loginErr" class="notice err hidden"></div>
-      <button id="loginBtn" class="btn">登 录</button>
-      <div class="login-trust">
-        <span>凭据仅存本机 · 0600</span><i></i><span>全透传真 PTY</span><i></i><span>断线一键重连</span>
-      </div>
-      <div class="login-foot">SSHWeb · 与 GOST 面板同系设计</div>
-    </div>
-  </section>
+    <div id="loginErr" class="mc-err hidden"></div>
+    <button id="loginBtn" class="mc-btn big">🔑 管理登录</button>
+    <button id="guestBtn" class="mc-btn big">🐔 游客模式进入农场</button>
+    <a class="mc-btn" href="https://github.com/baiduxc/sshweb" target="_blank" rel="noopener noreferrer">GitHub 仓库</a>
+  </div>
+  <div class="mc-foot">每只鸡都是一台服务器 · 游客可追鸡互殴 · 管理登录后才能打开终端</div>
 </div>
 
-<!-- 主界面 -->
+<!-- 农场（3D） -->
 <div id="app" class="app hidden">
-  <aside class="sidebar" id="sidebar">
-    <button class="brand" id="brandHome" title="返回主页">
-      <span class="name"><svg width="30" height="30" viewBox="0 0 32 32" fill="none" aria-hidden="true"><path d="M5 7 10.5 25 16 12.5 21.5 25 27 7" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
-      <span class="brand-sub">SSH 服务器管理</span>
-    </button>
-    <div class="actions">
-      <a class="btn ghost sm" id="ghLink" href="https://github.com/baiduxc/sshweb" target="_blank" rel="noopener noreferrer" title="GitHub 仓库" aria-label="GitHub 仓库"><span data-icon="github"></span></a>
-      <button class="btn ghost sm" id="themeBtn" title="切换主题"></button>
-      <button class="btn ghost sm" id="pwBtn" title="修改管理密码">密码</button>
-      <button class="btn ghost sm" id="logoutBtn">退出</button>
-    </div>
-  </aside>
+  <div id="farmHost"></div>
+  <div id="labels"></div>
+  <div id="fPrompt" class="f-prompt hidden">按 F 交互</div>
 
-  <main class="main">
-    <div class="topbar">
-      <div class="hero-copy"><h1 id="pageTitle">我的服务器</h1><p id="pageDesc">添加主机，随时进入网页终端</p></div>
-      <div class="actions" id="topActions"></div>
-    </div>
+  <!-- 左上角统计（唯一面板） -->
+  <div class="stats-panel" id="statsPanel">
+    <div id="statProbes">📡 探针鸡在线 0/0</div>
+    <div id="statServers">🐔 网站鸡在线 0/0</div>
+    <div id="statAngry">💢 暴躁鸡 0 只</div>
+    <div id="statMats" class="mats">🎒 我的材料 0</div>
+    <div id="statTip" class="tip">💡 每天添加一个探针 → 材料 +100</div>
+  </div>
 
-    <!-- 服务器列表视图（按区域分组） -->
-    <div class="content view" id="view-list">
-      <div id="serverGroups"></div>
-    </div>
+  <!-- 顶部事件播报 -->
+  <div id="eventTicker" class="event-ticker hidden"></div>
 
-    <!-- 终端视图 -->
-    <div class="view term-view hidden" id="view-term">
-      <div class="term-shell">
-        <div class="term-toolbar">
-          <button class="btn ghost sm" id="termBack"><span data-icon="back"></span><span class="lab"> 服务器列表</span></button>
-          <div class="term-title"><span class="status-dot" id="termDot"></span><b id="termName">—</b><small id="termAddr"></small></div>
-          <div class="term-tools">
-            <select id="quickCmd" title="常用命令"></select>
-            <button class="btn ghost sm" id="termPaste" title="粘贴 (Ctrl+Alt+V)"><span data-icon="paste"></span></button>
-            <button class="btn ghost sm" id="termCopy" title="复制选中 (Ctrl+Alt+C)"><span data-icon="copy"></span></button>
-            <button class="btn ghost sm" id="termClear" title="清屏 (Ctrl+Alt+L)"><span data-icon="trash"></span></button>
-            <button class="btn ghost sm" id="termReconnect" title="重连 (Ctrl+Alt+R)"><span data-icon="refresh"></span></button>
-            <button class="btn ghost sm" id="termFullscreen" title="全屏 (F11 / Ctrl+Alt+F)"><span data-icon="expand"></span></button>
-          </div>
-        </div>
-        <div class="term-host" id="termHost"></div>
-      </div>
+  <!-- 死亡覆盖层 -->
+  <div id="deathOverlay" class="death-overlay hidden">
+    <div class="death-box">
+      <h2>💀 你被啄倒了！</h2>
+      <p id="deathBy"></p>
+      <button class="mc-btn big" id="respawnBtn">🐣 随机复活</button>
     </div>
-  </main>
+  </div>
+
+  <!-- 触屏摇杆 -->
+  <div id="joystick" class="joystick hidden"><div class="stick"></div></div>
+
+  <!-- 指针锁定提示 -->
+  <div id="lockHint" class="lock-hint">点击画面锁定鼠标 · ESC 释放</div>
+
+  <div class="hud-top">
+    <div class="hud-actions">
+      <a class="mc-btn sm" href="https://github.com/baiduxc/sshweb" target="_blank" rel="noopener noreferrer" title="GitHub 仓库">GitHub</a>
+      <button class="mc-btn sm" id="joinBtn" title="任何人都可以部署公开探针">📡 加入</button>
+      <button class="mc-btn sm" id="renameBtn" title="修改我的昵称">✏️ 改名</button>
+      <button class="mc-btn sm" id="adminBtn" title="管理面板 (E)">☰ 管理 (E)</button>
+      <button class="mc-btn sm" id="logoutBtn">退出</button>
+    </div>
+  </div>
+
+  <div class="hud-hint" id="hudHint">点击画面锁定鼠标 · WASD 移动 · 空格跳 · Shift 疾跑 · 左键攻击/挖矿/放方块 · F 交互 · ESC 释放鼠标</div>
+
+  <div class="hotbar" id="hotbar"></div>
 </div>
 
-<!-- 弹层：服务器表单 / 快捷键 -->
+<!-- 终端覆盖层 -->
+<div id="terminal" class="terminal-wrap hidden">
+  <div class="term-win">
+    <div class="term-bar">
+      <span class="status-dot" id="termDot"></span>
+      <b id="termName">—</b><small id="termAddr"></small>
+      <div class="term-tools">
+        <select id="quickCmd" title="常用命令"></select>
+        <button class="mc-btn sm" id="termPaste" title="粘贴">粘贴</button>
+        <button class="mc-btn sm" id="termCopy" title="复制选中">复制</button>
+        <button class="mc-btn sm" id="termClear" title="清屏">清屏</button>
+        <button class="mc-btn sm" id="termReconnect" title="重连">重连</button>
+        <button class="mc-btn sm danger" id="termClose" title="关闭 (Esc)">✕ 关闭</button>
+      </div>
+    </div>
+    <div class="term-host" id="termHost"></div>
+  </div>
+</div>
+
+<!-- 弹层：管理面板 / 表单 / 确认框 -->
 <div id="modal" class="modal hidden"></div>
 <div id="toast" class="toast hidden"></div>
 
 <script src="vendor/xterm.js"></script>
 <script src="vendor/fit.js"></script>
 <script src="vendor/search.js"></script>
-<script src="vendor/weblinks.js"></script>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

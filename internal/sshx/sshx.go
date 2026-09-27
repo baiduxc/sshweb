@@ -88,7 +88,9 @@ func TestConn(si *ServerInfo, timeout time.Duration) TestResult {
 		if out, err := session.Output("uname -sr 2>/dev/null; echo; (uptime -p 2>/dev/null || uptime) 2>/dev/null; echo; hostname 2>/dev/null"); err == nil {
 			lines := []string{}
 			for _, ln := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-				if strings.TrimSpace(ln) != "" { lines = append(lines, ln) }
+				if strings.TrimSpace(ln) != "" {
+					lines = append(lines, ln)
+				}
 			}
 			get := func(i int) string {
 				if i < len(lines) {
