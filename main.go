@@ -25,7 +25,7 @@ import (
 //go:embed all:web
 var embeddedWeb embed.FS
 
-var version = "0.3.0"
+var version = "0.3.1"
 
 // ---------------- 数据模型 ----------------
 
@@ -594,6 +594,7 @@ func main() {
 	mux.HandleFunc("/api/probe/join", app.handleProbeJoin)
 	mux.HandleFunc("/api/probes", app.require(app.handleProbes))
 	mux.HandleFunc("/api/probe/report", app.handleProbeReport)
+	mux.HandleFunc("/api/probe/goodbye", app.handleProbeGoodbye)
 	mux.HandleFunc("/api/probe/unlock", app.handleProbeUnlock)
 	mux.HandleFunc("/api/probe/unlockpass", app.handleProbeUnlockPass)
 	mux.HandleFunc("/api/probes/public", app.handleProbesPublic)

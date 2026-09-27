@@ -337,6 +337,19 @@ func (a *App) handleProbeUnlockPass(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"unlocked": n})
 }
 
+// POST /api/probe/goodbye?t=token — 卸载时 agent 通知面板删除探针记录
+func (a *App) handleProbeGoodbye(w http.ResponseWriter, r *http.Request) {
+	token := r.URL.Query().Get("t")
+	pr := a.store.ProbeByToken(token)
+	if pr == nil {
+		writeJSON(w, 404, map[string]string{"error": "invalid token"})
+		return
+	}
+	a.store.DeleteProbe(pr.ID)
+	a.probes.remove(pr.ID)
+	writeJSON(w, 200, map[string]string{"ok": "1"})
+}
+
 func requestBaseURL(r *http.Request) string {
 	scheme := "http"
 	if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
@@ -359,6 +372,12 @@ PANEL="` + base + `"
 TOKEN="` + token + `"
 BIN=/usr/local/bin/sshweb-probe.sh
 UNIT=/etc/systemd/system/sshweb-probe.service
+
+cat > /etc/sshweb-probe.env <<ENVEOF
+PANEL="$PANEL"
+TOKEN="$TOKEN"
+ENVEOF
+chmod 600 /etc/sshweb-probe.env
 
 cat > "$BIN" <<'AGENT'
 #!/usr/bin/env bash
@@ -446,10 +465,29 @@ echo "   卸载： curl -fsSL '$PANEL/probe/uninstall.sh' | sudo bash"
 
 const uninstallScript = `#!/usr/bin/env bash
 set -e
+BIN=/usr/local/bin/sshweb-probe.sh
+ENVF=/etc/sshweb-probe.env
+# 取面板地址与 token（新版读 env 文件；旧版 agent 直接从脚本里解析）
+PANEL=""; TOKEN=""
+if [ -f "$ENVF" ]; then
+  . "$ENVF"
+fi
+if [ -z "$TOKEN" ] && [ -f "$BIN" ]; then
+  PANEL=$(grep -oE 'PANEL="[^"]+"' "$BIN" | head -1 | sed 's/PANEL="//; s/"$//')
+  TOKEN=$(grep -oE 'TOKEN="[^"]+"' "$BIN" | head -1 | sed 's/TOKEN="//; s/"$//')
+fi
 systemctl disable --now sshweb-probe >/dev/null 2>&1 || true
-rm -f /etc/systemd/system/sshweb-probe.service /usr/local/bin/sshweb-probe.sh
+rm -f /etc/systemd/system/sshweb-probe.service "$BIN" "$ENVF"
 systemctl daemon-reload
-echo "🗑️ SSHWeb 探针已卸载"
+# 通知面板删除探针记录（失败不阻塞，面板端也可在管理面板手动删除）
+if [ -n "$PANEL" ] && [ -n "$TOKEN" ]; then
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -m 8 -X POST "$PANEL/api/probe/goodbye?t=$TOKEN" >/dev/null 2>&1 || true
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -T 8 -O /dev/null --post-data="" "$PANEL/api/probe/goodbye?t=$TOKEN" >/dev/null 2>&1 || true
+  fi
+fi
+echo "🗑️ SSHWeb 探针已卸载（面板中的探针鸡将在几秒内消失）"
 `
 
 func (a *App) handleProbeAgentScript(w http.ResponseWriter, r *http.Request) {
