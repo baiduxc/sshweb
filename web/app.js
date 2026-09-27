@@ -1027,7 +1027,7 @@ function bindFarmInput(canvas) {
   document.addEventListener('mousemove', e => {
     if (!farm.pointerLocked) return;
     farm.yaw -= e.movementX * .0025;
-    farm.pitch = Math.max(.05, Math.min(1.2, farm.pitch + e.movementY * .0022));
+    farm.pitch = Math.max(-.55, Math.min(1.2, farm.pitch + e.movementY * .0022));
   });
 
   // 触屏：右半屏拖动视角 + 点按攻击
@@ -1048,7 +1048,7 @@ function bindFarmInput(canvas) {
         const dx = t.clientX - touchView.x, dy = t.clientY - touchView.y;
         touchView.moved += Math.abs(dx) + Math.abs(dy);
         farm.yaw -= dx * .006;
-        farm.pitch = Math.max(.05, Math.min(1.2, farm.pitch + dy * .005));
+        farm.pitch = Math.max(-.55, Math.min(1.2, farm.pitch + dy * .005));
         touchView.x = t.clientX; touchView.y = t.clientY;
       }
     }
@@ -1802,15 +1802,18 @@ function tick() {
     }
   });
 
-  // 相机：第三人称跟随
-  const cy = farm.pos.y + 2 + farm.dist * Math.sin(farm.pitch);
+  // 相机：第三人称跟随（pitch 可为负 → 仰视：相机降到最低点后抬高注视点）
+  const minCamY = farm.pos.y + .6;
+  const cyRaw = farm.pos.y + 2 + farm.dist * Math.sin(farm.pitch);
+  const cy = Math.max(minCamY, cyRaw);
   const hd = farm.dist * Math.cos(farm.pitch);
   farm.camera.position.set(
     farm.pos.x + Math.sin(farm.yaw) * hd,
     cy,
     farm.pos.z + Math.cos(farm.yaw) * hd
   );
-  farm.camera.lookAt(farm.pos.x, farm.pos.y + 1.4, farm.pos.z);
+  // 相机被地面托住时，把差值补偿到注视点高度 → 视线向上抬
+  farm.camera.lookAt(farm.pos.x, farm.pos.y + 1.4 + Math.max(0, minCamY - cyRaw), farm.pos.z);
 
   // 受击红闪
   const cv = farm.renderer.domElement;
