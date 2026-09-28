@@ -562,7 +562,7 @@ const farm = {
   pos: new THREE.Vector3(0, 0, 12), velY: 0, grounded: true,
   swing: 0, hurtTime: 0, walkT: 0,
   weapon: 'peck', aiming: false,
-  flying: false, lastSpaceTap: 0, leftHeld: false, mining: null,
+  flying: false, lastSpaceTap: 0, leftHeld: false, mining: null, buildHold: null, noPlaceUntilUp: false,
   arrows: [], fx: [],
   blocks: new Map(), colliders: [],
   buildType: 'dirt',
@@ -589,6 +589,39 @@ const NOTE_SLOTS = [1, 2, 3, 4, 5, 6, 7].map(n => ({
   sfx: 'note', build: 'note' + n, note: n, hard: H.wood,
 }));
 const PAGE_SIZE = 9;
+/* 快捷栏槽位图标：建造类用真实纹理，其余用 emoji */
+function slotIcon(w) {
+  if (w.build) {
+    const url = blockIconUrl(w.build);
+    if (url) return `<img class="texicon" src="${url}" alt="">`;
+  }
+  return `<span class="emoji">${w.icon}</span>`;
+}
+/* 用真实方块纹理生成快捷栏图标（emoji 与材质不符的问题） */
+const _iconCache = new Map();
+function blockIconUrl(id) {
+  if (_iconCache.has(id)) return _iconCache.get(id);
+  let url = '';
+  try {
+    if (NOTE_COLORS[id]) {
+      const c = document.createElement('canvas'); c.width = c.height = 16;
+      const g = c.getContext('2d');
+      g.fillStyle = '#' + NOTE_COLORS[id].toString(16).padStart(6, '0');
+      g.fillRect(0, 0, 16, 16);
+      g.fillStyle = 'rgba(255,255,255,.85)';
+      g.font = 'bold 10px monospace'; g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.fillText('\u266A', 8, 9);
+      url = c.toDataURL();
+    } else {
+      const m = BLOCK_MATS[id];
+      const mm = Array.isArray(m) ? m[2] : m; // 草方块取顶面
+      const tex = mm && mm.map;
+      if (tex && tex.image && tex.image.toDataURL) url = tex.image.toDataURL();
+    }
+  } catch (e) { url = ''; }
+  _iconCache.set(id, url);
+  return url;
+}
 let weaponIdx = 0;
 function weapons() {
   if (!weapons._admin) weapons._admin = [...WEAPONS_ADMIN, ...BUILD_SLOTS, ...NOTE_SLOTS];
@@ -1197,6 +1230,8 @@ function bindFarmInput(canvas) {
     if (e.code === 'BracketRight') { gotoPage(curPage() + 1); return; }
     if (e.code === 'Space') {
       e.preventDefault();
+      farm.keys.add('Space');          // 飞行上升需要
+      if (e.repeat) return;            // 长按自动重复不触发双击判定
       // 双击空格切换飞行
       const now = performance.now();
       if (now - (farm.lastSpaceTap || 0) < 320) {
@@ -1230,6 +1265,7 @@ function bindFarmInput(canvas) {
     if (!farm.pointerLocked && !farm.isTouch) { requestLock(); return; }
     if (e.button === 0) {
       farm.leftHeld = true;
+      farm.leftDownAt = performance.now();
       farm.mining = null;
       farm.swing = .25;
       const w = curWeapon();
@@ -1241,7 +1277,16 @@ function bindFarmInput(canvas) {
     }
   });
   window.addEventListener('mouseup', e => {
-    if (e.button === 0) { farm.leftHeld = false; farm.mining = null; }
+    if (e.button === 0) {
+      farm.leftHeld = false; farm.mining = null; farm.noPlaceUntilUp = false;
+      const bh = farm.buildHold;
+      farm.buildHold = null;
+      // 短按（<0.25s）且未进入挖掘 → 在准星面放置
+      if (bh && !bh.mined && bh.t <= .25 && !state.myHP.down) {
+        farm.swing = .25;
+        placeBlockCenter(bh.type);
+      }
+    }
   });
   document.addEventListener('mousemove', e => {
     if (!farm.pointerLocked) return;
@@ -1360,7 +1405,16 @@ function cycleWeapon(d) {
 function primaryAction() {
   const w = curWeapon();
   if (w.mine) { tryMineOrBreakCenter(); return; }
-  if (w.build) { placeBlockCenter(w.build); return; }
+  if (w.build) {
+    // MC 语义：准星对着已有方块 → 按住延迟判定（单击=在该面放置，长按=挖掘）；对着空地 → 立即放置
+    const obj = centerBlockMesh();
+    if (obj) {
+      farm.buildHold = { key: obj.userData.key, t: 0, type: w.build, mined: false };
+      return;
+    }
+    placeBlockCenter(w.build);
+    return;
+  }
   if (w.id === 'gun') {
     farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
     farm.raycaster.far = w.range;
@@ -1549,20 +1603,46 @@ function centerRay(far) {
   farm.raycaster.far = far;
   return farm.raycaster;
 }
-// 准星指向的方块（玩家建造的），null=没有
+// 准星指向的方块（玩家建造的），null=没有；忽略相机与玩家之间的命中（身后的方块）
 function centerBlockMesh() {
   centerRay(8 + farm.dist + 4);
   const meshes = [...farm.blocks.values()].map(b => b.mesh);
   const hits = farm.raycaster.intersectObjects(meshes, false);
-  return hits.length ? hits[0].object : null;
+  const camToPlayer = farm.camera.position.distanceTo(_chestV.set(farm.pos.x, farm.pos.y + 1, farm.pos.z));
+  const hit = hits.find(h => h.distance > camToPlayer - 1.5);
+  return hit ? hit.object : null;
 }
 // 按住左键连续挖掘：到时间即破坏（MC 手感）。由 tick 调用。
 function updateMining(dt) {
   if (!farm.leftHeld || state.myHP.down) { farm.mining = null; return; }
   const w = curWeapon();
   if (w.build) {
-    // 建造槽按住左键 → 连续放置（0.2s 冷却）
+    const bh = farm.buildHold;
+    if (bh) {
+      // 对准已有方块按住：0.25s 内松开 = 放置到该面；超过 = 挖掘
+      const b = farm.blocks.get(bh.key);
+      if (!b) { farm.buildHold = null; return; }
+      bh.t += dt;
+      if (bh.t > .25) {
+        if (!bh.mined) {
+          bh.mined = true;
+          const type = b.type;
+          bh.hard = (BLOCK_DEF[type] && BLOCK_DEF[type].hard) || (NOTE_FREQS[type] ? H.wood : H.stone);
+          bh.mt = 0;
+        }
+        bh.mt += dt;
+        if (Math.random() < dt * 8) spawnHitParticles(b.mesh.position, b.type === 'obsidian' ? 0x30204a : 0x999999, 2);
+        if (bh.mt >= bh.hard) {
+          farm.buildHold = null;
+          farm.noPlaceUntilUp = true; // 挖完这颗之前松开左键，不再连续放置补洞
+          breakBlock(b.mesh);
+        }
+      }
+      return;
+    }
+    // 对着空地按住 → 连续放置（0.2s 冷却）
     farm.mining = null;
+    if (farm.noPlaceUntilUp) return;
     if (farm.cooldown <= 0) {
       farm.cooldown = PLACE_CD;
       farm.swing = .25;
@@ -1610,18 +1690,24 @@ function tryMineOrBreakCenter() {
   farm.mining = { key: obj.userData.key, t: 0, hard, type };
 }
 // 准星指向的放置格（白色预览框共用）——返回 {bx,by,bz} 或 null
+const _chestV = new THREE.Vector3();
 function computePlaceCell() {
-  centerRay(farm.dist + 12);
+  centerRay(farm.dist + 14);
   const ground = farm.ground;
   const placedMeshes = [...farm.blocks.values()].map(b => b.mesh);
   const hits = farm.raycaster.intersectObjects(ground ? [ground, ...placedMeshes] : placedMeshes, true);
   if (!hits.length) return null;
-  const hit = hits[0];
-  if (hit.distance > 8 + farm.dist + 2) return null;
+  // 忽略相机与玩家之间的命中（否则准星会落在自己身后的地面，放置不跟手）
+  const camToPlayer = farm.camera.position.distanceTo(_chestV.set(farm.pos.x, farm.pos.y + 1, farm.pos.z));
+  const hit = hits.find(h => h.distance > camToPlayer - 1.5 && h.face);
+  if (!hit) return null;
   const n = hit.face.normal.clone();
   const p = hit.point.clone().addScaledVector(n, .5);
   const bx = Math.round(p.x), by = Math.max(0, Math.round(p.y - .5)), bz = Math.round(p.z);
   if (Math.abs(bx) > GROUND - 1 || Math.abs(bz) > GROUND - 1 || by > 64) return null;
+  // 以玩家为圆心的触达距离（MC 手感 ~8 格）
+  const dx = bx - farm.pos.x, dz = bz - farm.pos.z, dy = by + .5 - (farm.pos.y + 1);
+  if (dx * dx + dz * dz + dy * dy > 8 * 8) return null;
   return { bx, by, bz };
 }
 function placeBlockCenter(type) {
@@ -2213,7 +2299,7 @@ function buildHotbar() {
     const gi = start + i;
     return `
     <button class="slot ${gi === weaponIdx ? 'sel' : ''}" data-w="${gi}" title="${w.name}${w.range > 10 ? ' · 远程' : ' · 近战'}${w.mine ? ' · 按住左键挖掘' : ''}${w.build ? ' · 按住左键连续放置' : ''}${w.note ? ' · 发音方块' : ''}">
-      <span class="num">${i + 1}</span><span class="emoji">${w.icon}</span><span class="nm">${w.name}</span>
+      <span class="num">${i + 1}</span>${slotIcon(w)}<span class="nm">${w.name}</span>
     </button>`;
   }).join('');
   hb.querySelectorAll('.slot').forEach(b => b.onclick = () => selectWeapon(parseInt(b.dataset.w, 10)));
