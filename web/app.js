@@ -81,6 +81,12 @@ function sfx(name) {
         o.type = 'sawtooth'; o.frequency.setValueAtTime(400, now); o.frequency.exponentialRampToValueAtTime(40, now + .5);
         g.gain.setValueAtTime(.25, now); g.gain.exponentialRampToValueAtTime(.001, now + .55);
         o.connect(g); o.start(now); o.stop(now + .56); break;
+      case 'boom': {
+        noise(.5, .5);
+        o.type = 'sine'; o.frequency.setValueAtTime(90, now); o.frequency.exponentialRampToValueAtTime(28, now + .45);
+        g.gain.setValueAtTime(.5, now); g.gain.exponentialRampToValueAtTime(.001, now + .55);
+        o.connect(g); o.start(now); o.stop(now + .6); break;
+      }
       case 'break':
         noise(.12, .2);
         o.type = 'square'; o.frequency.setValueAtTime(150, now);
@@ -356,6 +362,12 @@ function onGameMsg(m) {
         toast(farm.flying ? '🕊️ AI Skill 开启了你的飞行' : '🚶 AI Skill 关闭了你的飞行');
       }
       break;
+    case 'explode': {
+      // 其他玩家引爆 TNT：本地演出（方块删除由服务端逐条广播）
+      const at = new THREE.Vector3(m.x || 0, (m.y || 0) + .5, m.z || 0);
+      explosionFx(at);
+      break;
+    }
     case 'playsound':
       if (m.by !== (state.me && state.me.id) && m.freq) {
         sfx._noteFreq = m.freq;
@@ -1267,11 +1279,14 @@ function bindFarmInput(canvas) {
       farm.leftHeld = true;
       farm.leftDownAt = performance.now();
       farm.mining = null;
+      farm.buildHold = null;
       farm.swing = .25;
       const w = curWeapon();
-      sfx(w.sfx);
+      if (w.sfx !== 'note') sfx(w.sfx);
+      // 对准方块时冷却一律 0.25s（单击/连点都跟手）；否则用武器冷却
+      const aimed = centerBlockMesh();
       if (farm.cooldown <= 0) {
-        farm.cooldown = w.cd;
+        farm.cooldown = aimed ? .25 : w.cd;
         primaryAction();
       }
     }
@@ -1279,13 +1294,7 @@ function bindFarmInput(canvas) {
   window.addEventListener('mouseup', e => {
     if (e.button === 0) {
       farm.leftHeld = false; farm.mining = null; farm.noPlaceUntilUp = false;
-      const bh = farm.buildHold;
       farm.buildHold = null;
-      // 短按（<0.25s）且未进入挖掘 → 在准星面放置
-      if (bh && !bh.mined && bh.t <= .25 && !state.myHP.down) {
-        farm.swing = .25;
-        placeBlockCenter(bh.type);
-      }
     }
   });
   document.addEventListener('mousemove', e => {
@@ -1404,17 +1413,15 @@ function cycleWeapon(d) {
 /* ---------- 攻击（屏幕中心射线） ---------- */
 function primaryAction() {
   const w = curWeapon();
-  if (w.mine) { tryMineOrBreakCenter(); return; }
-  if (w.build) {
-    // MC 语义：准星对着已有方块 → 按住延迟判定（单击=在该面放置，长按=挖掘）；对着空地 → 立即放置
-    const obj = centerBlockMesh();
-    if (obj) {
-      farm.buildHold = { key: obj.userData.key, t: 0, type: w.build, mined: false };
-      return;
-    }
-    placeBlockCenter(w.build);
+  // 单击即挖：任何工具对准方块 → 立刻挖掉（TNT 会爆炸）
+  const blk = centerBlockMesh();
+  if (blk && (w.mine || w.build || w.dmg > 0)) {
+    farm.mining = null; farm.buildHold = null;
+    breakBlock(blk);
     return;
   }
+  if (w.mine) return;
+  if (w.build) { placeBlockCenter(w.build); return; }
   if (w.id === 'gun') {
     farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
     farm.raycaster.far = w.range;
@@ -1425,21 +1432,7 @@ function primaryAction() {
   if (w.id === 'bow') { shootArrow(w); return; }
   farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
   farm.raycaster.far = w.range + 2;
-  // 先打实体；没打中实体且准星对着方块 → 攻击方块（音频方块发声）
-  const hitSomething = resolveHit(w, false);
-  if (!hitSomething) {
-    const obj = centerBlockMesh();
-    if (obj) {
-      const type = obj.userData.placed;
-      if (NOTE_FREQS[type]) {
-        sfx._noteFreq = NOTE_FREQS[type];
-        sfx('note');
-        gsend({ t: 'playsound', freq: NOTE_FREQS[type] });
-      }
-      // 攻击也计入挖掘（按住左键连续挖）
-      tryMineOrBreakCenter();
-    }
-  }
+  resolveHit(w, false);
 }
 
 function collectTargets() {
@@ -1614,80 +1607,85 @@ function centerBlockMesh() {
 }
 // 按住左键连续挖掘：到时间即破坏（MC 手感）。由 tick 调用。
 function updateMining(dt) {
-  if (!farm.leftHeld || state.myHP.down) { farm.mining = null; return; }
+  if (!farm.leftHeld || state.myHP.down) { farm.mining = null; farm.buildHold = null; return; }
   const w = curWeapon();
   if (w.build) {
-    const bh = farm.buildHold;
-    if (bh) {
-      // 对准已有方块按住：0.25s 内松开 = 放置到该面；超过 = 挖掘
-      const b = farm.blocks.get(bh.key);
-      if (!b) { farm.buildHold = null; return; }
-      bh.t += dt;
-      if (bh.t > .25) {
-        if (!bh.mined) {
-          bh.mined = true;
-          const type = b.type;
-          bh.hard = (BLOCK_DEF[type] && BLOCK_DEF[type].hard) || (NOTE_FREQS[type] ? H.wood : H.stone);
-          bh.mt = 0;
-        }
-        bh.mt += dt;
-        if (Math.random() < dt * 8) spawnHitParticles(b.mesh.position, b.type === 'obsidian' ? 0x30204a : 0x999999, 2);
-        if (bh.mt >= bh.hard) {
-          farm.buildHold = null;
-          farm.noPlaceUntilUp = true; // 挖完这颗之前松开左键，不再连续放置补洞
-          breakBlock(b.mesh);
-        }
-      }
-      return;
-    }
-    // 对着空地按住 → 连续放置（0.2s 冷却）
-    farm.mining = null;
-    if (farm.noPlaceUntilUp) return;
+    farm.mining = null; farm.buildHold = null;
+    // 对准方块：长按也连挖（每 0.25s 一颗）；对准空地：连续放置
     if (farm.cooldown <= 0) {
-      farm.cooldown = PLACE_CD;
-      farm.swing = .25;
-      placeBlockCenter(w.build);
+      const obj = centerBlockMesh();
+      if (obj) {
+        farm.cooldown = .25;
+        farm.swing = .25;
+        farm.noPlaceUntilUp = true;
+        breakBlock(obj);
+      } else if (!farm.noPlaceUntilUp) {
+        farm.cooldown = PLACE_CD;
+        farm.swing = .25;
+        placeBlockCenter(w.build);
+      }
     }
     return;
   }
   if (w.mine || w.dmg > 0) {
-    const obj = centerBlockMesh();
-    if (!obj) { farm.mining = null; return; }
-    const key = obj.userData.key;
-    if (!farm.mining || farm.mining.key !== key) {
-      const type = obj.userData.placed;
-      const hard = (BLOCK_DEF[type] && BLOCK_DEF[type].hard) || (NOTE_FREQS[type] ? H.wood : H.stone);
-      farm.mining = { key, t: 0, hard, type };
-    }
-    farm.mining.t += dt;
-    // 挖掘进度粒子
-    if (Math.random() < dt * 8) {
-      spawnHitParticles(obj.position, farm.mining.type === 'obsidian' ? 0x30204a : 0x999999, 2);
-    }
-    if (farm.mining.t >= farm.mining.hard) {
-      farm.mining = null;
-      breakBlock(obj);
+    // 长按连续挖：每 0.25s 挖掉准星下的一颗
+    if (farm.cooldown <= 0) {
+      const obj = centerBlockMesh();
+      if (obj) {
+        farm.cooldown = .25;
+        farm.swing = .25;
+        breakBlock(obj);
+      } else farm.mining = null;
     }
     return;
   }
   farm.mining = null;
 }
 function breakBlock(obj) {
-  sfx('break');
   const type = obj.userData.placed;
-  spawnHitParticles(obj.position, type === 'stone' ? 0x999999 : type === 'wood' ? 0x8a6b3f : 0x79553a);
   const key = obj.userData.key;
+  const bx = obj.userData.bx, by = obj.userData.by, bz = obj.userData.bz;
   farm.blocks.delete(key);
   farm.scene.remove(obj);
-  gsend({ t: 'block', op: 'del', x: obj.userData.bx, y: obj.userData.by, z: obj.userData.bz });
+  gsend({ t: 'block', op: 'del', x: bx, y: by, z: bz });
+  if (type === 'tnt') {
+    // 💥 炸药爆炸：本地立即演出，服务端负责炸掉周围方块并广播
+    explosionFx(obj.position);
+    gsend({ t: 'explode', x: bx, y: by, z: bz });
+    return;
+  }
+  sfx('break');
+  if (NOTE_FREQS[type]) { sfx._noteFreq = NOTE_FREQS[type]; sfx('note'); gsend({ t: 'playsound', freq: NOTE_FREQS[type] }); }
+  spawnHitParticles(obj.position, type === 'obsidian' ? 0x30204a : type === 'stone' ? 0x999999 : type === 'wood' ? 0x8a6b3f : 0x79553a);
 }
-// 单击挖掘入口（保持兼容：立刻开始计时，第一帧就登记 mining）
+/* 💥 爆炸演出：闪光球 + 大量粒子 + 低频轰鸣 + 镜头震动 */
+function explosionFx(at) {
+  sfx('boom');
+  farm.shakeT = .45;
+  const flash = new THREE.Mesh(
+    new THREE.SphereGeometry(1.2, 12, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffcc55, transparent: true, opacity: .95 })
+  );
+  flash.position.copy(at);
+  farm.scene.add(flash);
+  const t0 = performance.now();
+  const grow = () => {
+    const t = (performance.now() - t0) / 420;
+    if (t >= 1) { farm.scene.remove(flash); return; }
+    flash.scale.setScalar(1 + t * 3.2);
+    flash.material.opacity = .95 * (1 - t);
+    requestAnimationFrame(grow);
+  };
+  grow();
+  spawnHitParticles(at, 0xff8833, 26);
+  spawnHitParticles(at, 0x555555, 18);
+  spawnHitParticles(at, 0xffee88, 12);
+}
+// 单击挖掘入口（兼容保留）
 function tryMineOrBreakCenter() {
   const obj = centerBlockMesh();
   if (!obj) return;
-  const type = obj.userData.placed;
-  const hard = (BLOCK_DEF[type] && BLOCK_DEF[type].hard) || (NOTE_FREQS[type] ? H.wood : H.stone);
-  farm.mining = { key: obj.userData.key, t: 0, hard, type };
+  breakBlock(obj);
 }
 // 准星指向的放置格（白色预览框共用）——返回 {bx,by,bz} 或 null
 const _chestV = new THREE.Vector3();
@@ -2174,6 +2172,13 @@ function tick() {
     }
   });
 
+  // 爆炸镜头震动
+  if (farm.shakeT > 0) {
+    farm.shakeT -= dt;
+    const s = Math.max(0, farm.shakeT) * .6;
+    farm.camera.position.x += (Math.random() - .5) * s;
+    farm.camera.position.y += (Math.random() - .5) * s;
+  }
   // 相机：第三人称跟随（pitch 可为负 → 仰视：相机降到最低点后抬高注视点）
   const minCamY = farm.pos.y + .6;
   const cyRaw = farm.pos.y + 2 + farm.dist * Math.sin(farm.pitch);

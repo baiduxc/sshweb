@@ -360,6 +360,36 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 		c.Flying, _ = m["flying"].(bool)
 		h.broadcast(map[string]any{"t": "pos", "id": c.ID, "x": c.X, "z": c.Z, "ry": c.RY, "mv": m["mv"], "flying": c.Flying}, c)
 
+	case "explode":
+		// TNT 被挖掉 → 服务端爆炸：摧毁半径内方块并广播
+		ex, ey, ez := int(f64(m["x"])), int(f64(m["y"])), int(f64(m["z"]))
+		if ex < -80 || ex > 80 || ey < 0 || ey > 64 || ez < -80 || ez > 80 {
+			return
+		}
+		const radius = 3
+		removed := [][]int{}
+		for dx := -radius; dx <= radius; dx++ {
+			for dy := -radius; dy <= radius; dy++ {
+				for dz := -radius; dz <= radius; dz++ {
+					if dx*dx+dy*dy+dz*dz > radius*radius {
+						continue
+					}
+					k := fmt.Sprintf("%d,%d,%d", ex+dx, ey+dy, ez+dz)
+					if v := h.store.BlockGet(k); v != "" && v != "-" {
+						h.store.SetBlock(k, "-")
+						removed = append(removed, []int{ex + dx, ey + dy, ez + dz})
+					}
+				}
+			}
+		}
+		for _, r := range removed {
+			h.broadcast(map[string]any{"t": "block", "op": "del", "x": r[0], "y": r[1], "z": r[2], "type": "tnt", "by": c.ID}, nil)
+		}
+		h.broadcast(map[string]any{"t": "explode", "x": ex, "y": ey, "z": ez, "by": c.ID}, c)
+		if len(removed) > 0 {
+			h.event(fmt.Sprintf("💥 %s 引爆了 TNT，炸掉了 %d 个方块", c.Name, len(removed)))
+		}
+
 	case "playsound":
 		// 音频方块被攻击命中：全场同步播放对应音高
 		freq := f64(m["freq"])
