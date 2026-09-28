@@ -803,19 +803,7 @@ function initFarm() {
     torch.position.set(gx, 2.35, GROUND); scene.add(torch);
   }
 
-  // 谷仓
-  const barn = new THREE.Group();
-  const barnBody = new THREE.Mesh(new THREE.BoxGeometry(8, 5, 6), mat(TEX.planks));
-  barnBody.position.y = 2.5; barnBody.castShadow = true; barn.add(barnBody);
-  const roofMat = matC(0x8f3b34);
-  const roofL = new THREE.Mesh(new THREE.BoxGeometry(4.9, .35, 6.6), roofMat);
-  roofL.position.set(-1.9, 6.1, 0); roofL.rotation.z = .5; roofL.castShadow = true; barn.add(roofL);
-  const roofR = roofL.clone(); roofR.position.x = 1.9; roofR.rotation.z = -.5; barn.add(roofR);
-  const door = new THREE.Mesh(new THREE.BoxGeometry(2.2, 3, .15), matC(0x4a3018));
-  door.position.set(0, 1.5, 3.05); barn.add(door);
-  barn.position.set(-18, 0, -16);
-  scene.add(barn);
-  farm.colliders.push({ x: -18, z: -16, hx: 4, hz: 3, top: 5 });
+  // v0.5.4：中央木屋（谷仓）已按需求移除，地图中间完全空旷
 
   // v0.5.0：清空地面物件（掩体石墙、树全部移除），保留中央农场建筑（谷仓、围栏）
   // 云
@@ -2238,6 +2226,22 @@ function resolveCollisions() {
   }
 }
 
+/* 卡片遮挡检测：相机到目标的射线若先被方块/地面挡住 → 视为穿墙，应隐藏 */
+const _occDir = new THREE.Vector3();
+const _v2 = new THREE.Vector3();
+function labelOccluded(targetPos) {
+  if (!farm.camera) return false;
+  _occDir.copy(targetPos).sub(farm.camera.position);
+  const camDist = _occDir.length();
+  if (camDist < 1) return false;
+  _occDir.normalize();
+  farm.raycaster.set(farm.camera.position, _occDir);
+  farm.raycaster.far = camDist - .6; // 留一点余量，避免自身方块误判
+  const meshes = [...farm.blocks.values()].map(b => b.mesh);
+  if (farm.ground) meshes.push(farm.ground);
+  const hits = farm.raycaster.intersectObjects(meshes, true);
+  return hits.length > 0;
+}
 function updateLabelPositions() {
   if (!farm.camera) return;
   const w = farm.renderer.domElement.clientWidth, h = farm.renderer.domElement.clientHeight;
@@ -2254,7 +2258,19 @@ function updateLabelPositions() {
   }
   for (const pr of state.probes) {
     const el = farm.labelEls.get('probe:' + pr.id), c = farm.probeById.get(pr.id);
-    if (el && c) proj(c.position, c.userData.down ? 1.0 : 2.0, el);
+    if (!el || !c) continue;
+    // 距离剔除：超过 60 格不显示
+    const d = c.position.distanceTo(farm.pos);
+    if (d > 60) { el.style.display = 'none'; continue; }
+    // 墙体遮挡：射线被方块/地面挡住则隐藏（每 200ms 检测一次）
+    const nowT = performance.now();
+    const ud = c.userData;
+    if (ud._occT === undefined || nowT - ud._occT > 200) {
+      ud._occT = nowT;
+      ud._occ = labelOccluded(_v2.set(c.position.x, c.position.y + 1.5, c.position.z));
+    }
+    if (ud._occ) { el.style.display = 'none'; continue; }
+    proj(c.position, c.userData.down ? 1.0 : 2.0, el);
   }
   for (const [, p] of state.players) {
     if (p.labelEl) proj(p.model.position, 3.1, p.labelEl);
