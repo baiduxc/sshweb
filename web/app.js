@@ -1283,8 +1283,8 @@ function bindFarmInput(canvas) {
       farm.swing = .25;
       const w = curWeapon();
       if (w.sfx !== 'note') sfx(w.sfx);
-      // 对准方块时冷却一律 0.25s（单击/连点都跟手）；否则用武器冷却
-      const aimed = centerBlockMesh();
+      // 镐子对准方块时冷却 0.25s（单击/连点都跟手）；否则用武器冷却
+      const aimed = w.mine ? centerBlockMesh() : null;
       if (farm.cooldown <= 0) {
         farm.cooldown = aimed ? .25 : w.cd;
         primaryAction();
@@ -1413,14 +1413,12 @@ function cycleWeapon(d) {
 /* ---------- 攻击（屏幕中心射线） ---------- */
 function primaryAction() {
   const w = curWeapon();
-  // 单击即挖：任何工具对准方块 → 立刻挖掉（TNT 会爆炸）
-  const blk = centerBlockMesh();
-  if (blk && (w.mine || w.build || w.dmg > 0)) {
-    farm.mining = null; farm.buildHold = null;
-    breakBlock(blk);
+  // MC 语义：只有镐子（⛏️）挖掘；建材槽只放置；武器只攻击实体
+  if (w.mine) {
+    const blk = centerBlockMesh();
+    if (blk) { farm.mining = null; breakBlock(blk); } // 单击即挖，TNT 会爆炸
     return;
   }
-  if (w.mine) return;
   if (w.build) { placeBlockCenter(w.build); return; }
   if (w.id === 'gun') {
     farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
@@ -1432,7 +1430,16 @@ function primaryAction() {
   if (w.id === 'bow') { shootArrow(w); return; }
   farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
   farm.raycaster.far = w.range + 2;
-  resolveHit(w, false);
+  // 先打实体；没打中实体且准星对着发音方块 → 让它发声
+  const hitSomething = resolveHit(w, false);
+  if (!hitSomething) {
+    const obj = centerBlockMesh();
+    if (obj && NOTE_FREQS[obj.userData.placed]) {
+      sfx._noteFreq = NOTE_FREQS[obj.userData.placed];
+      sfx('note');
+      gsend({ t: 'playsound', freq: NOTE_FREQS[obj.userData.placed] });
+    }
+  }
 }
 
 function collectTargets() {
@@ -1610,25 +1617,17 @@ function updateMining(dt) {
   if (!farm.leftHeld || state.myHP.down) { farm.mining = null; farm.buildHold = null; return; }
   const w = curWeapon();
   if (w.build) {
+    // 建材槽按住 = 连续放置（绝不挖掘）
     farm.mining = null; farm.buildHold = null;
-    // 对准方块：长按也连挖（每 0.25s 一颗）；对准空地：连续放置
     if (farm.cooldown <= 0) {
-      const obj = centerBlockMesh();
-      if (obj) {
-        farm.cooldown = .25;
-        farm.swing = .25;
-        farm.noPlaceUntilUp = true;
-        breakBlock(obj);
-      } else if (!farm.noPlaceUntilUp) {
-        farm.cooldown = PLACE_CD;
-        farm.swing = .25;
-        placeBlockCenter(w.build);
-      }
+      farm.cooldown = PLACE_CD;
+      farm.swing = .25;
+      placeBlockCenter(w.build);
     }
     return;
   }
-  if (w.mine || w.dmg > 0) {
-    // 长按连续挖：每 0.25s 挖掉准星下的一颗
+  if (w.mine) {
+    // 镐子长按连续挖：每 0.25s 挖掉准星下的一颗
     if (farm.cooldown <= 0) {
       const obj = centerBlockMesh();
       if (obj) {
