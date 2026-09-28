@@ -1,5 +1,7 @@
 sshweb
 sshweb-*
+!skill/
+!skill/**
 data/
 *.tar.gz
 .DS_Store

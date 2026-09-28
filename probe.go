@@ -168,23 +168,12 @@ func (a *App) handleProbeJoin(w http.ResponseWriter, r *http.Request) {
 		CreatedAt: time.Now(),
 	}
 	a.store.AddProbe(pr)
-	// 每日奖励：添加一个探针 → 该 IP 绑定的玩家 +100 建造材料（每天限一次）
-	bonus := 0
-	if rec := a.store.GetOrCreatePlayer(gameClientIP(r)); rec != nil {
-		today := time.Now().Format("2006-01-02")
-		if rec.LastBonus != today {
-			rec.LastBonus = today
-			rec.Materials += 100
-			bonus = 100
-			a.store.SaveAsync()
-		}
-	}
+	// v0.5.0：全员无限材料，不再发每日探针奖励
 	base := requestBaseURL(r)
 	writeJSON(w, 200, map[string]any{
 		"id":        pr.ID,
 		"install":   fmt.Sprintf("curl -fsSL '%s/probe/agent.sh?t=%s' | sudo bash", base, pr.Token),
 		"uninstall": fmt.Sprintf("curl -fsSL '%s/probe/uninstall.sh' | sudo bash", base),
-		"bonus":     bonus,
 	})
 }
 

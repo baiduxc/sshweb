@@ -40,8 +40,6 @@
     <div id="statProbes">📡 探针鸡在线 0/0</div>
     <div id="statServers">🐔 网站鸡在线 0/0</div>
     <div id="statAngry">💢 暴躁鸡 0 只</div>
-    <div id="statMats" class="mats">🎒 我的材料 0</div>
-    <div id="statTip" class="tip">💡 每天添加一个探针 → 材料 +100</div>
   </div>
 
   <!-- 顶部事件播报 -->
@@ -72,9 +70,12 @@
     </div>
   </div>
 
-  <div class="hud-hint" id="hudHint">点击画面锁定鼠标 · WASD 移动 · 空格跳 · Shift 疾跑 · 左键攻击/挖矿/放方块 · F 交互 · ESC 释放鼠标</div>
+  <div class="hud-hint" id="hudHint">点击画面锁定鼠标 · WASD 移动 · 空格跳/双击空格飞行 · Shift 疾跑(飞行时下降) · 按住左键挖掘/放置 · 滚轮或 [ ] 翻页 · Q 循环 · F 交互 · ESC 释放鼠标</div>
 
-  <div class="hotbar" id="hotbar"></div>
+  <div class="hotbar-wrap">
+    <div class="hotbar" id="hotbar"></div>
+    <div class="hotbar-pager" id="hotbarPager"></div>
+  </div>
 </div>
 
 <!-- 终端覆盖层 -->

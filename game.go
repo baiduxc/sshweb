@@ -32,6 +32,7 @@ type gameClient struct {
 	Y       float64 `json:"-"` // 初始高度（建筑顶上出生）
 	Z       float64 `json:"z"`
 	RY      float64 `json:"ry"`
+	Flying  bool    `json:"flying"`
 
 	rec  *FarmPlayer // IP 绑定的持久档案（游客）
 	conn *websocket.Conn
@@ -55,13 +56,14 @@ type gameHub struct {
 	playerHP map[string]*playerHPState
 	store    *Store
 	probeRT  *probeRuntime
+	limiter  *rateLimiter
 }
 
 func newGameHub(store *Store) *gameHub {
 	return &gameHub{
 		clients: map[*gameClient]struct{}{}, chickens: map[string]*chickenState{},
 		probeHP: map[string]*chickenState{}, playerHP: map[string]*playerHPState{},
-		store: store,
+		store: store, limiter: &rateLimiter{},
 	}
 }
 
@@ -166,13 +168,14 @@ type playerInfo struct {
 	X         float64 `json:"x"`
 	Z         float64 `json:"z"`
 	RY        float64 `json:"ry"`
+	Flying    bool    `json:"flying"`
 	HP        int     `json:"hp"`
 	Down      bool    `json:"down"`
 	Materials int     `json:"materials"`
 }
 
 func (c *gameClient) infoWithHP(h *gameHub) playerInfo {
-	pi := playerInfo{ID: c.ID, Name: c.Name, Country: c.Country, Admin: c.Admin, X: c.X, Z: c.Z, RY: c.RY}
+	pi := playerInfo{ID: c.ID, Name: c.Name, Country: c.Country, Admin: c.Admin, X: c.X, Z: c.Z, RY: c.RY, Flying: c.Flying}
 	st := h.player(c.ID)
 	pi.HP, pi.Down = st.HP, st.Down
 	if c.rec != nil {
@@ -318,7 +321,31 @@ func isValidNote(typ string) bool {
 	if len(typ) != 5 {
 		return false
 	}
-	return typ[4] >= '1' && typ[4] <= '7'
+	return typ[0:4] == "note" && typ[4] >= '1' && typ[4] <= '7'
+}
+
+// isValidBlockType 服务端白名单：与前端材质库保持一致（basic + ore + wool + note）
+var validBlockTypes = map[string]bool{}
+
+func init() {
+	for _, t := range []string{
+		"dirt", "wood", "stone", "grass", "cobble", "planks_oak", "planks_spruce", "planks_birch",
+		"log_oak", "log_spruce", "log_birch", "glass", "brick", "sand", "gravel", "snow", "ice",
+		"obsidian", "ore_gold", "ore_iron", "ore_diamond", "ore_redstone", "ore_emerald",
+		"tnt", "glowstone", "bookshelf",
+		"wool_white", "wool_orange", "wool_magenta", "wool_lightblue", "wool_yellow", "wool_lime",
+		"wool_pink", "wool_gray", "wool_lightgray", "wool_cyan", "wool_purple", "wool_blue",
+		"wool_brown", "wool_green", "wool_red", "wool_black",
+	} {
+		validBlockTypes[t] = true
+	}
+}
+
+func isValidBlockType(typ string) bool {
+	if validBlockTypes[typ] {
+		return true
+	}
+	return strings.HasPrefix(typ, "note") && isValidNote(typ)
 }
 
 func f64(v any) float64 {
@@ -330,7 +357,15 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 	switch m["t"] {
 	case "pos":
 		c.X, c.Z, c.RY = f64(m["x"]), f64(m["z"]), f64(m["ry"])
-		h.broadcast(map[string]any{"t": "pos", "id": c.ID, "x": c.X, "z": c.Z, "ry": c.RY, "mv": m["mv"]}, c)
+		c.Flying, _ = m["flying"].(bool)
+		h.broadcast(map[string]any{"t": "pos", "id": c.ID, "x": c.X, "z": c.Z, "ry": c.RY, "mv": m["mv"], "flying": c.Flying}, c)
+
+	case "playsound":
+		// 音频方块被攻击命中：全场同步播放对应音高
+		freq := f64(m["freq"])
+		if freq > 20 && freq < 5000 {
+			h.broadcast(map[string]any{"t": "playsound", "freq": freq, "by": c.ID}, c)
+		}
 
 	case "hit":
 		target, _ := m["target"].(string)
@@ -437,8 +472,8 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 		pst.HP = playerMaxHP
 		pst.Down = false
 		h.mu.Unlock()
-		nx := float64(rand.Intn(40) - 20)
-		nz := float64(rand.Intn(40) - 20)
+		nx := float64(rand.Intn(120) - 60)
+		nz := float64(rand.Intn(120) - 60)
 		ny := float64(h.store.ColumnTop(int(nx), int(nz)))
 		c.X, c.Z = nx, nz
 		c.sendMsg(map[string]any{"t": "respawn", "x": nx, "y": ny, "z": nz})
@@ -447,7 +482,7 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 	case "block":
 		op, _ := m["op"].(string)
 		x, y, z := int(f64(m["x"])), int(f64(m["y"])), int(f64(m["z"]))
-		if x < -80 || x > 80 || y < 0 || y > 20 || z < -80 || z > 80 {
+		if x < -80 || x > 80 || y < 0 || y > 64 || z < -80 || z > 80 {
 			return
 		}
 		typ, _ := m["type"].(string)
@@ -455,36 +490,16 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 		val := ""
 		switch op {
 		case "add":
-			if typ != "dirt" && typ != "wood" && typ != "stone" && !(strings.HasPrefix(typ, "note") && isValidNote(typ)) {
+			if !isValidBlockType(typ) {
 				return
 			}
-			// 游客：服务端权威扣材料
-			if !c.Admin && c.rec != nil {
-				if c.rec.Materials <= 0 {
-					c.sendMsg(map[string]any{"t": "toast", "text": "建造材料不足，明天添加一个探针可获得 +100"})
-					c.sendMsg(map[string]any{"t": "materials", "n": c.rec.Materials})
-					return
-				}
-				if cur := h.store.BlockGet(key); cur != "" && cur != "-" {
-					return // 已有方块
-				}
-				c.rec.Materials--
-				h.store.SaveAsync()
-				c.sendMsg(map[string]any{"t": "materials", "n": c.rec.Materials})
+			// v0.5.0：全员无限材料，建造不扣材料
+			if cur := h.store.BlockGet(key); cur != "" && cur != "-" {
+				return // 已有方块
 			}
 			val = typ
 		case "del":
 			val = "-"
-			if !c.Admin && c.rec != nil {
-				if cur := h.store.BlockGet(key); cur != "" && cur != "-" {
-					c.rec.Materials++
-					if c.rec.Materials > 9999 {
-						c.rec.Materials = 9999
-					}
-					h.store.SaveAsync()
-					c.sendMsg(map[string]any{"t": "materials", "n": c.rec.Materials})
-				}
-			}
 		default:
 			return
 		}

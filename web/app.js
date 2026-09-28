@@ -340,6 +340,28 @@ function onGameMsg(m) {
       break;
     }
     case 'block': applyRemoteBlock(`${m.x},${m.y},${m.z}`, m.op === 'del' ? '-' : m.type, true); break;
+    case 'blocks':
+      // skill API 批量方块（分帧广播，不播放置音效避免刷屏）
+      for (const b of (m.ops || [])) applyRemoteBlock(`${b.x},${b.y},${b.z}`, b.op === 'del' ? '-' : b.type, false);
+      break;
+    case 'skillMove':
+      // AI Skill 控制角色
+      if (m.x !== undefined) farm.pos.x = m.x;
+      if (m.z !== undefined) farm.pos.z = m.z;
+      if (m.y !== undefined && m.y > 0) farm.pos.y = m.y;
+      if (m.ry !== undefined) farm.farmer.rotation.y = m.ry;
+      if (m.flying !== undefined && m.flying !== farm.flying) {
+        farm.flying = m.flying;
+        farm.velY = 0;
+        toast(farm.flying ? '🕊️ AI Skill 开启了你的飞行' : '🚶 AI Skill 关闭了你的飞行');
+      }
+      break;
+    case 'playsound':
+      if (m.by !== (state.me && state.me.id) && m.freq) {
+        sfx._noteFreq = m.freq;
+        sfx('note');
+      }
+      break;
   }
 }
 
@@ -379,6 +401,34 @@ function noiseFill(g, size, base, vary) {
   }
 }
 const cl = v => Math.max(0, Math.min(255, Math.round(v)));
+/* 16x16 程序纹理：还原 MC 材质 */
+function oreTex(spot) {
+  return pixelTexture(16, g => {
+    noiseFill(g, 16, [125, 125, 125], 20);
+    g.fillStyle = spot;
+    const pts = [[3, 3], [4, 3], [3, 4], [10, 5], [11, 5], [11, 6], [6, 9], [7, 9], [6, 10], [12, 11], [13, 11], [12, 12], [4, 12], [5, 13]];
+    for (const [x, y] of pts) g.fillRect(x, y, 1, 1);
+  });
+}
+function woolTex(rgb, vary) {
+  return pixelTexture(16, g => noiseFill(g, 16, rgb, vary || 12));
+}
+function plankTex(rgb) {
+  return pixelTexture(16, g => {
+    noiseFill(g, 16, rgb, 12);
+    g.fillStyle = `rgba(${rgb[0] * .45 | 0},${rgb[1] * .45 | 0},${rgb[2] * .45 | 0},.55)`;
+    for (let y = 0; y < 16; y += 4) g.fillRect(0, y, 16, 1);
+    g.fillRect(7, 0, 1, 8); g.fillRect(3, 8, 1, 8); g.fillRect(11, 12, 1, 4);
+  });
+}
+function logTex(rgb, dark) {
+  return pixelTexture(16, g => {
+    noiseFill(g, 16, rgb, 10);
+    g.fillStyle = dark;
+    for (let x = 1; x < 16; x += 5) g.fillRect(x, 0, 1, 16);
+    g.fillRect(3, 0, 1, 16);
+  });
+}
 const TEX = {
   grassTop: pixelTexture(16, g => noiseFill(g, 16, [95, 159, 53], 26)),
   grassSide: pixelTexture(16, g => { noiseFill(g, 16, [121, 85, 58], 22); for (let y = 0; y < 4; y++) for (let x = 0; x < 16; x++) { const v = (Math.random()-.5)*26; g.fillStyle = `rgb(${cl(95+v)},${cl(159+v)},${cl(53+v)})`; g.fillRect(x, y, 1, 1); } }),
@@ -394,20 +444,114 @@ const TEX = {
   farmerSkin: pixelTexture(8, g => noiseFill(g, 8, [196, 148, 106], 12)),
   farmerShirt: pixelTexture(8, g => noiseFill(g, 8, [58, 110, 190], 14)),
   farmerPants: pixelTexture(8, g => noiseFill(g, 8, [70, 58, 130], 12)),
+  /* v0.5.0 新增材质 */
+  planksSpruce: plankTex([114, 84, 48]),
+  planksBirch: plankTex([216, 204, 144]),
+  logOak: logTex([104, 78, 47], 'rgba(60,42,22,.5)'),
+  logSpruce: logTex([74, 54, 30], 'rgba(40,28,14,.55)'),
+  logBirch: logTex([216, 210, 198], 'rgba(90,86,78,.5)'),
+  glass: pixelTexture(16, g => { g.fillStyle = 'rgba(200,230,255,.22)'; g.fillRect(0, 0, 16, 16); g.strokeStyle = 'rgba(230,245,255,.85)'; g.strokeRect(.5, .5, 15, 15); g.fillStyle = 'rgba(255,255,255,.5)'; g.fillRect(3, 3, 2, 6); g.fillRect(5, 3, 1, 2); }),
+  brick: pixelTexture(16, g => { noiseFill(g, 16, [150, 67, 52], 14); g.fillStyle = 'rgba(220,220,215,.9)'; for (let y = 0; y < 16; y += 4) g.fillRect(0, y, 16, 1); for (let y = 0; y < 16; y += 8) { g.fillRect(3, y, 1, 4); g.fillRect(11, y, 1, 4); } for (let y = 4; y < 16; y += 8) { g.fillRect(7, y, 1, 4); g.fillRect(15, y, 1, 4); } }),
+  sand: pixelTexture(16, g => noiseFill(g, 16, [219, 207, 163], 16)),
+  gravel: pixelTexture(16, g => { noiseFill(g, 16, [136, 130, 128], 34); g.fillStyle = 'rgba(90,86,84,.8)'; g.fillRect(3, 4, 2, 2); g.fillRect(10, 9, 2, 2); g.fillRect(6, 12, 2, 1); }),
+  snow: pixelTexture(16, g => noiseFill(g, 16, [240, 246, 250], 8)),
+  ice: pixelTexture(16, g => { noiseFill(g, 16, [140, 190, 235], 14); g.strokeStyle = 'rgba(220,240,255,.6)'; g.beginPath(); g.moveTo(2, 2); g.lineTo(8, 7); g.lineTo(6, 13); g.stroke(); g.beginPath(); g.moveTo(12, 3); g.lineTo(13, 10); g.stroke(); }),
+  obsidian: pixelTexture(16, g => { noiseFill(g, 16, [20, 16, 30], 10); g.fillStyle = 'rgba(90,60,160,.35)'; g.fillRect(2, 3, 2, 1); g.fillRect(9, 6, 2, 1); g.fillRect(5, 11, 2, 1); g.fillRect(12, 13, 2, 1); }),
+  oreGold: oreTex('#fcee4b'),
+  oreIron: oreTex('#d8af93'),
+  oreDiamond: oreTex('#5decf5'),
+  oreRedstone: oreTex('#ff2a1a'),
+  oreEmerald: oreTex('#2ee55e'),
+  tnt: pixelTexture(16, g => { noiseFill(g, 16, [200, 50, 40], 14); g.fillStyle = '#f2f2f2'; g.fillRect(0, 6, 16, 4); g.fillStyle = '#202020'; g.font = 'bold 4px monospace'; g.fillText('TNT', 3, 9.5); }),
+  glowstone: pixelTexture(16, g => { noiseFill(g, 16, [220, 190, 110], 20); g.fillStyle = 'rgba(255,240,150,.95)'; g.fillRect(3, 3, 3, 3); g.fillRect(10, 5, 3, 3); g.fillRect(5, 10, 4, 3); g.fillRect(12, 11, 2, 2); }),
+  bookshelf: pixelTexture(16, g => {
+    noiseFill(g, 16, [162, 130, 78], 10);
+    const cols = ['#a33', '#36a', '#3a5', '#a83', '#73a', '#399'];
+    for (let row = 0; row < 2; row++) for (let i = 0; i < 6; i++) {
+      g.fillStyle = cols[(row * 3 + i) % cols.length];
+      g.fillRect(1 + i * 2.4, 2 + row * 7, 2, 5);
+    }
+  }),
 };
-const mat = tex => new THREE.MeshLambertMaterial({ map: tex });
+/* 16 色羊毛 */
+const WOOL_COLORS = {
+  white: [[238, 238, 235], '白色'], orange: [[235, 136, 28], '橙色'], magenta: [[179, 64, 179], '品红'],
+  lightblue: [[94, 168, 220], '淡蓝'], yellow: [[240, 204, 24], '黄色'], lime: [[112, 185, 26], '黄绿'],
+  pink: [[233, 150, 222], '粉色'], gray: [[62, 68, 71], '灰色'], lightgray: [[142, 150, 153], '淡灰'],
+  cyan: [[14, 137, 153], '青色'], purple: [[121, 42, 179], '紫色'], blue: [[41, 47, 153], '蓝色'],
+  brown: [[102, 76, 52], '棕色'], green: [[68, 106, 28], '绿色'], red: [[163, 36, 36], '红色'],
+  black: [[13, 13, 15], '黑色'],
+};
+for (const [k, [rgb]] of Object.entries(WOOL_COLORS)) TEX['wool_' + k] = woolTex(rgb);
+
+/* 材质注册表：id、名称、图标、硬度（挖掘秒数）、材质 */
+const matT = tex => new THREE.MeshLambertMaterial({ map: tex });
+const mat = matT;
+const matTAlpha = (tex, op) => new THREE.MeshLambertMaterial({ map: tex, transparent: true, opacity: op });
 const matC = color => new THREE.MeshLambertMaterial({ color });
+const H = { soft: .25, wood: .5, stone: .8, obs: 2 };
+const BLOCK_TYPES = [
+  { id: 'grass', name: '草方块', icon: '🟩', hard: H.soft },
+  { id: 'dirt', name: '泥土', icon: '🟫', hard: H.soft },
+  { id: 'stone', name: '石头', icon: '🪨', hard: H.stone },
+  { id: 'cobble', name: '圆石', icon: '🧱', hard: H.stone },
+  { id: 'planks_oak', name: '橡木木板', icon: '🟧', hard: H.wood },
+  { id: 'planks_spruce', name: '云杉木板', icon: '🟫', hard: H.wood },
+  { id: 'planks_birch', name: '桦木木板', icon: '🟨', hard: H.wood },
+  { id: 'log_oak', name: '橡木原木', icon: '🪵', hard: H.wood },
+  { id: 'log_spruce', name: '云杉原木', icon: '🌲', hard: H.wood },
+  { id: 'log_birch', name: '桦木原木', icon: '🌳', hard: H.wood },
+  { id: 'wood', name: '木头(旧)', icon: '🪵', hard: H.wood },
+  { id: 'glass', name: '玻璃', icon: '🪟', hard: H.stone },
+  { id: 'brick', name: '砖块', icon: '🧱', hard: H.stone },
+  { id: 'sand', name: '沙', icon: '🏖️', hard: H.soft },
+  { id: 'gravel', name: '沙砾', icon: '⚪', hard: H.soft },
+  { id: 'snow', name: '雪', icon: '❄️', hard: H.soft },
+  { id: 'ice', name: '冰', icon: '🧊', hard: H.stone },
+  { id: 'obsidian', name: '黑曜石', icon: '⬛', hard: H.obs },
+  { id: 'ore_gold', name: '金矿石', icon: '🟡', hard: H.stone },
+  { id: 'ore_iron', name: '铁矿石', icon: '🟠', hard: H.stone },
+  { id: 'ore_diamond', name: '钻石矿石', icon: '💎', hard: H.stone },
+  { id: 'ore_redstone', name: '红石矿石', icon: '🔴', hard: H.stone },
+  { id: 'ore_emerald', name: '绿宝石矿石', icon: '💚', hard: H.stone },
+  { id: 'tnt', name: 'TNT', icon: '🧨', hard: H.soft },
+  { id: 'glowstone', name: '萤石', icon: '💡', hard: H.wood },
+  { id: 'bookshelf', name: '书架', icon: '📚', hard: H.wood },
+  ...Object.entries(WOOL_COLORS).map(([k, [, cn]]) => ({ id: 'wool_' + k, name: cn + '羊毛', icon: '🧶', hard: H.wood })),
+];
+const BLOCK_DEF = Object.fromEntries(BLOCK_TYPES.map(b => [b.id, b]));
 const NOTE_FREQS = { note1: 261.63, note2: 293.66, note3: 329.63, note4: 349.23, note5: 392.0, note6: 440.0, note7: 493.88 };
 const NOTE_COLORS = { note1: 0xe05252, note2: 0xe08a3c, note3: 0xe0c93c, note4: 0x5cb85c, note5: 0x4a90d9, note6: 0x6a5acd, note7: 0xa94ad9 };
 const BLOCK_MATS = {
-  dirt: mat(TEX.dirt), wood: mat(TEX.wood), stone: mat(TEX.cobble),
+  grass: [matT(TEX.grassSide), matT(TEX.grassSide), matT(TEX.grassTop), matT(TEX.dirt), matT(TEX.grassSide), matT(TEX.grassSide)],
+  dirt: matT(TEX.dirt),
+  stone: matT(TEX.stone),
+  cobble: matT(TEX.cobble),
+  wood: matT(TEX.wood),
+  planks_oak: matT(TEX.planks), planks_spruce: matT(TEX.planksSpruce), planks_birch: matT(TEX.planksBirch),
+  log_oak: matT(TEX.logOak), log_spruce: matT(TEX.logSpruce), log_birch: matT(TEX.logBirch),
+  glass: matTAlpha(TEX.glass, .55),
+  brick: matT(TEX.brick),
+  sand: matT(TEX.sand), gravel: matT(TEX.gravel), snow: matT(TEX.snow),
+  ice: matTAlpha(TEX.ice, .72),
+  obsidian: matT(TEX.obsidian),
+  ore_gold: matT(TEX.oreGold), ore_iron: matT(TEX.oreIron), ore_diamond: matT(TEX.oreDiamond),
+  ore_redstone: matT(TEX.oreRedstone), ore_emerald: matT(TEX.oreEmerald),
+  tnt: matT(TEX.tnt),
+  glowstone: new THREE.MeshLambertMaterial({ map: TEX.glowstone, emissive: 0x997733 }),
+  bookshelf: matT(TEX.bookshelf),
   note1: matC(NOTE_COLORS.note1), note2: matC(NOTE_COLORS.note2), note3: matC(NOTE_COLORS.note3),
   note4: matC(NOTE_COLORS.note4), note5: matC(NOTE_COLORS.note5), note6: matC(NOTE_COLORS.note6),
   note7: matC(NOTE_COLORS.note7),
 };
+for (const k of Object.keys(WOOL_COLORS)) BLOCK_MATS['wool_' + k] = matT(TEX['wool_' + k]);
 
 /* ================= 场景 ================= */
-const WORLD = 120;
+const PLACE_CD = .2;   // 放置方块冷却（可按住连放）
+const ATTACK_CD = 1;   // 攻击冷却
+const WORLD = 160;      // 可行走范围 ±78（v0.5.0 扩大 3 倍）
+const GROUND = 78;      // 地面半宽
+const CHUNK = 16;       // 16x16 chunk 合并渲染
 const FENCE = 26;
 const farm = {
   inited: false, scene: null, camera: null, renderer: null, raycaster: null,
@@ -418,46 +562,140 @@ const farm = {
   pos: new THREE.Vector3(0, 0, 12), velY: 0, grounded: true,
   swing: 0, hurtTime: 0, walkT: 0,
   weapon: 'peck', aiming: false,
+  flying: false, lastSpaceTap: 0, leftHeld: false, mining: null,
   arrows: [], fx: [],
   blocks: new Map(), colliders: [],
   buildType: 'dirt',
   cooldown: 0, pointerLocked: false, isTouch: false,
   joyVec: { x: 0, y: 0 }, mineHold: null, leftDown: null, drag: null,
 };
-const BUILD_SLOTS = [
-  { id: 'dirt', name: '泥土', icon: '🟫', range: 8, dmg: 0, cd: .2, sfx: 'place', build: 'dirt' },
-  { id: 'wood', name: '木头', icon: '🪵', range: 8, dmg: 0, cd: .2, sfx: 'place', build: 'wood' },
-  { id: 'stone', name: '石头', icon: '🪨', range: 8, dmg: 0, cd: .2, sfx: 'place', build: 'stone' },
-];
-const NOTE_SLOTS = [1, 2, 3, 4, 5, 6, 7].map(n => ({
-  id: 'note' + n, name: ['Do', 'Re', 'Mi', 'Fa', 'Sol', 'La', 'Si'][n - 1], icon: '🎵', range: 8, dmg: 0, cd: .2,
-  sfx: 'note', build: 'note' + n, note: n,
-}));
 const WEAPONS_ADMIN = [
   { id: 'sword', name: '木剑', icon: '🗡️', range: 7, dmg: 20, cd: 1, sfx: 'swing' },
   { id: 'bow', name: '弓箭', icon: '🏹', range: 60, dmg: 16, cd: 1, sfx: 'bow' },
   { id: 'gun', name: '手枪', icon: '🔫', range: 80, dmg: 12, cd: 1, sfx: 'shoot' },
   { id: 'pick', name: '镐子', icon: '⛏️', range: 6, dmg: 4, cd: 1, sfx: 'swing', mine: true },
-  ...BUILD_SLOTS,
-  ...NOTE_SLOTS,
 ];
 const WEAPONS_GUEST = [
   { id: 'peck', name: '攻击', icon: '👊', range: 4, dmg: 20, cd: 1, sfx: 'peck' },
-  ...BUILD_SLOTS,
-  { id: 'demolish', name: '拆除', icon: '⛏️', range: 6, dmg: 0, cd: .5, sfx: 'swing', mine: true },
+  { id: 'pick', name: '镐子', icon: '⛏️', range: 6, dmg: 4, cd: 1, sfx: 'swing', mine: true },
 ];
+/* 材质槽：全员无限材料，全部材质可用 */
+const BUILD_SLOTS = BLOCK_TYPES.map(b => ({
+  id: b.id, name: b.name, icon: b.icon, range: 8, dmg: 0, cd: PLACE_CD, sfx: 'place',
+  build: b.id, hard: b.hard,
+}));
+const NOTE_SLOTS = [1, 2, 3, 4, 5, 6, 7].map(n => ({
+  id: 'note' + n, name: ['Do', 'Re', 'Mi', 'Fa', 'Sol', 'La', 'Si'][n - 1], icon: '🎵', range: 8, dmg: 0, cd: PLACE_CD,
+  sfx: 'note', build: 'note' + n, note: n, hard: H.wood,
+}));
+const PAGE_SIZE = 9;
 let weaponIdx = 0;
-function weapons() { return state.admin ? WEAPONS_ADMIN : WEAPONS_GUEST; }
+function weapons() {
+  if (!weapons._admin) weapons._admin = [...WEAPONS_ADMIN, ...BUILD_SLOTS, ...NOTE_SLOTS];
+  if (!weapons._guest) weapons._guest = [...WEAPONS_GUEST, ...BUILD_SLOTS, ...NOTE_SLOTS];
+  return state.admin ? weapons._admin : weapons._guest;
+}
 function curWeapon() { return weapons()[Math.min(weaponIdx, weapons().length - 1)]; }
-const BLOCK_NAMES = { dirt: '泥土', wood: '木头', stone: '石头', note1: 'Do', note2: 'Re', note3: 'Mi', note4: 'Fa', note5: 'Sol', note6: 'La', note7: 'Si' };
+function pageCount() { return Math.ceil(weapons().length / PAGE_SIZE); }
+function curPage() { return Math.min(Math.floor(weaponIdx / PAGE_SIZE), pageCount() - 1); }
+function gotoPage(p) {
+  const n = pageCount();
+  p = ((p % n) + n) % n;
+  const slot = weaponIdx % PAGE_SIZE;
+  weaponIdx = Math.min(p * PAGE_SIZE + slot, weapons().length - 1);
+  selectWeapon(weaponIdx, true);
+}
+const BLOCK_NAMES = Object.fromEntries([
+  ...BLOCK_TYPES.map(b => [b.id, b.name]),
+  ...Object.entries(NOTE_FREQS).map(([k]) => [k, k.replace('note', '音符')]),
+]);
+
+/* ---------- 地面：16x16 Chunk 合并 BufferGeometry（只渲染暴露面） ---------- */
+function buildGroundChunks(scene) {
+  const group = new THREE.Group();
+  group.name = 'ground';
+  const topTex = TEX.grassTop.clone();
+  topTex.wrapS = topTex.wrapT = THREE.RepeatWrapping;
+  topTex.needsUpdate = true;
+  const topMat = matT(topTex);
+  const sideTex = TEX.grassSide.clone();
+  sideTex.wrapS = sideTex.wrapT = THREE.RepeatWrapping;
+  sideTex.needsUpdate = true;
+  const sideMat = matT(sideTex);
+  const nChunks = Math.ceil(GROUND * 2 / CHUNK); // 156/16 → 10 段
+  const half = GROUND;
+  // 顶面：每 chunk 一个合并平面
+  const topGeos = [];
+  for (let cx = 0; cx < nChunks; cx++) for (let cz = 0; cz < nChunks; cz++) {
+    const x0 = -half + cx * CHUNK, x1 = Math.min(x0 + CHUNK, half);
+    const z0 = -half + cz * CHUNK, z1 = Math.min(z0 + CHUNK, half);
+    const w = x1 - x0, d = z1 - z0;
+    if (w <= 0 || d <= 0) continue;
+    const g = new THREE.PlaneGeometry(w, d);
+    g.rotateX(-Math.PI / 2);
+    g.translate(x0 + w / 2, 0, z0 + d / 2);
+    // UV 按世界坐标平铺，纹理 1:1（RepeatWrapping）
+    const uv = g.attributes.uv;
+    const pos = g.attributes.position;
+    for (let i = 0; i < uv.count; i++) {
+      uv.setXY(i, pos.getX(i) + half, pos.getZ(i) + half);
+    }
+    topGeos.push(g);
+  }
+  const merged = mergeGeos(topGeos);
+  const topMesh = new THREE.Mesh(merged, topMat);
+  topMesh.receiveShadow = true;
+  group.add(topMesh);
+  // 边缘侧面（世界一圈，合并成两个 mesh）
+  const skirt = () => {
+    const gs = [];
+    const add = (w, x, z, ry) => {
+      const g = new THREE.PlaneGeometry(w, 2);
+      g.rotateY(ry);
+      g.translate(x, -1, z);
+      gs.push(g);
+    };
+    add(half * 2, 0, half, Math.PI);        // 南面
+    add(half * 2, 0, -half, 0);             // 北面
+    add(half * 2, half, 0, -Math.PI / 2);   // 东面
+    add(half * 2, -half, 0, Math.PI / 2);   // 西面
+    return gs;
+  };
+  group.add(new THREE.Mesh(mergeGeos(skirt()), sideMat));
+  scene.add(group);
+  return group;
+}
+function mergeGeos(geos) {
+  // 简单合并非索引 geometry（先 toNonIndexed）
+  geos = geos.map(g => g.index ? g.toNonIndexed() : g);
+  let vCount = 0;
+  for (const g of geos) vCount += g.attributes.position.count;
+  const pos = new Float32Array(vCount * 3);
+  const nor = new Float32Array(vCount * 3);
+  const uv = new Float32Array(vCount * 2);
+  let vo = 0, uo = 0;
+  for (const g of geos) {
+    pos.set(g.attributes.position.array, vo * 3);
+    nor.set(g.attributes.normal.array, vo * 3);
+    uv.set(g.attributes.uv.array, uo * 2);
+    vo += g.attributes.position.count;
+    uo += g.attributes.uv.count;
+    g.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return out;
+}
 
 function initFarm() {
   const host = $('#farmHost');
   const scene = new THREE.Scene();
   scene.background = new THREE.Color(0x87ceeb);
-  scene.fog = new THREE.Fog(0x87ceeb, 70, 220);
+  scene.fog = new THREE.Fog(0x87ceeb, 120, 560);
 
-  const camera = new THREE.PerspectiveCamera(60, host.clientWidth / host.clientHeight, .1, 500);
+  const camera = new THREE.PerspectiveCamera(60, host.clientWidth / host.clientHeight, .1, 800);
   const renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: 'high-performance' });
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.25));
   renderer.setSize(host.clientWidth, host.clientHeight);
@@ -470,60 +708,54 @@ function initFarm() {
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
   const sc = sun.shadow.camera;
-  sc.left = -70; sc.right = 70; sc.top = 70; sc.bottom = -70; sc.far = 200;
+  sc.left = -90; sc.right = 90; sc.top = 90; sc.bottom = -90; sc.far = 260;
   scene.add(sun);
   scene.add(new THREE.AmbientLight(0xbfd4ff, .75));
   scene.add(new THREE.HemisphereLight(0xcfe8ff, 0x5d9c3a, .5));
 
-  const ground = new THREE.Mesh(
-    new THREE.BoxGeometry(WORLD, 1, WORLD),
-    [mat(TEX.grassSide), mat(TEX.grassSide), mat(TEX.grassTop), mat(TEX.dirt), mat(TEX.grassSide), mat(TEX.grassSide)]
-  );
-  ground.position.y = -.5;
-  ground.receiveShadow = true;
-  ground.name = 'ground';
-  scene.add(ground);
+  // 地面：16x16 Chunk 合并 BufferGeometry 渲染，只渲染暴露面（顶面 + 世界边缘侧面）
+  const ground = buildGroundChunks(scene);
+  farm.ground = ground;
 
-  // 围栏
-  const postGeo = new THREE.BoxGeometry(.35, 1.5, .35);
+  // 围栏：合并渲染（InstancedMesh 柱 + 4 根长横杆），范围 ±GROUND，南面留 5 格大门
   const woodMat = mat(TEX.wood);
-  const addFenceRun = (x1, z1, x2, z2) => {
-    const dx = x2 - x1, dz = z2 - z1;
-    const len = Math.hypot(dx, dz);
-    const n = Math.round(len / 2);
-    const ang = Math.atan2(dx, dz);
-    for (let i = 0; i <= n; i++) {
-      const t = i / n;
-      const post = new THREE.Mesh(postGeo, woodMat);
-      post.position.set(x1 + dx * t, .75, z1 + dz * t);
-      post.castShadow = true;
-      scene.add(post);
-      if (i < n) for (const ry of [.55, 1.05]) {
-        const rail = new THREE.Mesh(new THREE.BoxGeometry(2, .18, .12), woodMat);
-        rail.position.set(x1 + dx * (t + .5 / n), ry, z1 + dz * (t + .5 / n));
-        rail.rotation.y = Math.atan2(-dz, dx); // 横杆与围栏走向平行
-        rail.scale.x = len / n / 2;
-        scene.add(rail);
-      }
+  {
+    const fencePosts = [];
+    const F = GROUND;
+    for (let x = -F; x <= F; x += 2) {
+      if (x < -2.5 || x > 2.5) { fencePosts.push([x, -F]); fencePosts.push([x, F]); }
     }
-  };
-  addFenceRun(-FENCE, -FENCE, FENCE, -FENCE);
-  addFenceRun(-FENCE, FENCE, -2.5, FENCE);
-  addFenceRun(2.5, FENCE, FENCE, FENCE);
-  addFenceRun(-FENCE, -FENCE, -FENCE, FENCE);
-  addFenceRun(FENCE, -FENCE, FENCE, FENCE);
+    for (let z = -F + 2; z <= F - 2; z += 2) { fencePosts.push([-F, z]); fencePosts.push([F, z]); }
+    const postGeo = new THREE.BoxGeometry(.35, 1.5, .35);
+    const inst = new THREE.InstancedMesh(postGeo, woodMat, fencePosts.length);
+    const mtx = new THREE.Matrix4();
+    fencePosts.forEach(([px, pz], i) => {
+      mtx.makeTranslation(px, .75, pz);
+      inst.setMatrixAt(i, mtx);
+    });
+    inst.castShadow = true;
+    scene.add(inst);
+    const railGeoX = new THREE.BoxGeometry(F * 2 + .35, .18, .12);
+    for (const ry of [.55, 1.05]) {
+      const r1 = new THREE.Mesh(railGeoX, woodMat); r1.position.set(0, ry, -F); scene.add(r1);
+      const r2 = new THREE.Mesh(railGeoX, woodMat); r2.position.set(0, ry, F); scene.add(r2);
+      const railGeoZ = new THREE.BoxGeometry(.12, .18, F * 2 + .35);
+      const r3 = new THREE.Mesh(railGeoZ, woodMat); r3.position.set(-F, ry, 0); scene.add(r3);
+      const r4 = new THREE.Mesh(railGeoZ, woodMat); r4.position.set(F, ry, 0); scene.add(r4);
+    }
+  }
   farm.colliders.push(
-    { x: 0, z: -FENCE, hx: FENCE, hz: .3, top: 1.5 },
-    { x: -(FENCE + 2.5) / 2, z: FENCE, hx: (FENCE - 2.5) / 2, hz: .3, top: 1.5 },
-    { x: (FENCE + 2.5) / 2, z: FENCE, hx: (FENCE - 2.5) / 2, hz: .3, top: 1.5 },
-    { x: -FENCE, z: 0, hx: .3, hz: FENCE, top: 1.5 },
-    { x: FENCE, z: 0, hx: .3, hz: FENCE, top: 1.5 },
+    { x: 0, z: -GROUND, hx: GROUND, hz: .3, top: 1.5 },
+    { x: -(GROUND + 2.5) / 2, z: GROUND, hx: (GROUND - 2.5) / 2, hz: .3, top: 1.5 },
+    { x: (GROUND + 2.5) / 2, z: GROUND, hx: (GROUND - 2.5) / 2, hz: .3, top: 1.5 },
+    { x: -GROUND, z: 0, hx: .3, hz: GROUND, top: 1.5 },
+    { x: GROUND, z: 0, hx: .3, hz: GROUND, top: 1.5 },
   );
   for (const gx of [-2.5, 2.5]) {
     const gp = new THREE.Mesh(new THREE.BoxGeometry(.5, 2.2, .5), mat(TEX.planks));
-    gp.position.set(gx, 1.1, FENCE); gp.castShadow = true; scene.add(gp);
+    gp.position.set(gx, 1.1, GROUND); gp.castShadow = true; scene.add(gp);
     const torch = new THREE.Mesh(new THREE.BoxGeometry(.18, .18, .18), new THREE.MeshBasicMaterial({ color: 0xffaa00 }));
-    torch.position.set(gx, 2.35, FENCE); scene.add(torch);
+    torch.position.set(gx, 2.35, GROUND); scene.add(torch);
   }
 
   // 谷仓
@@ -540,41 +772,12 @@ function initFarm() {
   scene.add(barn);
   farm.colliders.push({ x: -18, z: -16, hx: 4, hz: 3, top: 5 });
 
-  // 掩体
-  const rockClusters = [[35, 10], [-35, -8], [12, -40], [-10, 40], [42, -30], [-42, 25], [30, 42], [-30, -40]];
-  for (const [rx, rz] of rockClusters) {
-    for (let i = 0; i < 4; i++) {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(2, 1.5, 2), mat(TEX.cobble));
-      b.position.set(rx + i * 2.05, .75, rz); b.castShadow = true; b.receiveShadow = true;
-      scene.add(b);
-      farm.colliders.push({ x: rx + i * 2.05, z: rz, hx: 1, hz: 1, top: 1.5 });
-    }
-    for (let i = 1; i < 3; i++) {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(2, 1.5, 2), mat(TEX.cobble));
-      b.position.set(rx, .75, rz + i * 2.05); b.castShadow = true; b.receiveShadow = true;
-      scene.add(b);
-      farm.colliders.push({ x: rx, z: rz + i * 2.05, hx: 1, hz: 1, top: 1.5 });
-    }
-  }
-  // 树
-  for (let i = 0; i < 26; i++) {
-    const a = Math.random() * Math.PI * 2, r = 30 + Math.random() * 25;
-    const tx = Math.cos(a) * r, tz = Math.sin(a) * r;
-    if (Math.abs(tx) > 58 || Math.abs(tz) > 58) continue;
-    const th = 4 + (Math.random() * 2 | 0);
-    const trunk = new THREE.Mesh(new THREE.BoxGeometry(1, th, 1), mat(TEX.wood));
-    trunk.position.set(tx, th / 2, tz); trunk.castShadow = true; scene.add(trunk);
-    farm.colliders.push({ x: tx, z: tz, hx: .5, hz: .5, top: th });
-    const lv = new THREE.Mesh(new THREE.BoxGeometry(4, 3, 4), mat(TEX.leaves));
-    lv.position.set(tx, th + 1.2, tz); lv.castShadow = true; scene.add(lv);
-    const lv2 = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.6, 2.4), mat(TEX.leaves));
-    lv2.position.set(tx, th + 3.1, tz); lv2.castShadow = true; scene.add(lv2);
-  }
+  // v0.5.0：清空地面物件（掩体石墙、树全部移除），保留中央农场建筑（谷仓、围栏）
   // 云
-  for (let i = 0; i < 10; i++) {
+  for (let i = 0; i < 16; i++) {
     const cw = 6 + Math.random() * 10;
     const cloud = new THREE.Mesh(new THREE.BoxGeometry(cw, 1.2, 4), new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: .82 }));
-    cloud.position.set((Math.random() - .5) * 160, 30 + Math.random() * 12, (Math.random() - .5) * 160);
+    cloud.position.set((Math.random() - .5) * 320, 30 + Math.random() * 12, (Math.random() - .5) * 320);
     cloud.userData.drift = .4 + Math.random() * .8;
     cloud.name = 'cloud';
     scene.add(cloud);
@@ -929,8 +1132,6 @@ function updateStatsPanel() {
   $('#statProbes').textContent = `📡 探针鸡在线 ${probesOnline}/${state.probes.length}`;
   $('#statServers').textContent = `🐔 网站鸡在线 ${state.admin ? svOnline + '/' + state.servers.length : state.servers.length + ' 只'}`;
   $('#statAngry').textContent = `💢 暴躁鸡 ${angry} 只`;
-  $('#statMats').textContent = `🎒 我的材料 ${state.materials}`;
-  $('#statTip').textContent = '💡 每天添加一个探针 → 材料 +100';
 }
 
 /* ---------- 远程玩家 ---------- */
@@ -962,6 +1163,7 @@ function moveRemote(m) {
   if (!p) return;
   p.tx = m.x; p.tz = m.z; p.try_ = m.ry;
   p.moving = !!m.mv;
+  if (m.flying !== undefined) p.info.flying = m.flying;
 }
 
 /* ---------- 指针锁定 / 摇杆 ---------- */
@@ -991,26 +1193,35 @@ function bindFarmInput(canvas) {
     if (e.code === 'KeyE') { e.preventDefault(); openAdmin(); return; }
     if (e.code === 'KeyQ') { cycleWeapon(1); return; }
     if (e.code === 'KeyF') { interactNear(); return; }
-    if (e.code === 'Space') { e.preventDefault(); doJump(); return; }
+    if (e.code === 'BracketLeft') { gotoPage(curPage() - 1); return; }
+    if (e.code === 'BracketRight') { gotoPage(curPage() + 1); return; }
+    if (e.code === 'Space') {
+      e.preventDefault();
+      // 双击空格切换飞行
+      const now = performance.now();
+      if (now - (farm.lastSpaceTap || 0) < 320) {
+        farm.lastSpaceTap = 0;
+        toggleFlying();
+      } else {
+        farm.lastSpaceTap = now;
+        doJump();
+      }
+      return;
+    }
     if (e.code.startsWith('Digit')) {
       const n = e.code === 'Digit0' ? 10 : parseInt(e.code.slice(5), 10);
-      const ws = weapons();
-      if (state.admin) {
-        // 管理员：1-7 = 发音方块 Do Re Mi Fa Sol La Si
-        if (n >= 1 && n <= 7) {
-          const idx = ws.findIndex(w => w.id === 'note' + n);
-          if (idx >= 0) selectWeapon(idx);
-        } else if (n === 8 || n === 9 || n === 10) {
-          const map = { 8: 'dirt', 9: 'wood', 10: 'stone' };
-          const idx = ws.findIndex(w => w.id === map[n]);
-          if (idx >= 0) selectWeapon(idx);
-        }
-      } else if (n >= 1 && n <= ws.length) selectWeapon(n - 1);
+      if (n >= 1 && n <= 9) selectWeapon(curPage() * PAGE_SIZE + n - 1);
     }
     farm.keys.add(e.code);
   });
   window.addEventListener('keyup', e => farm.keys.delete(e.code));
   canvas.addEventListener('contextmenu', e => e.preventDefault());
+  canvas.addEventListener('wheel', e => {
+    if (!$('#app').classList.contains('hidden')) {
+      e.preventDefault();
+      gotoPage(curPage() + (e.deltaY > 0 ? 1 : -1));
+    }
+  }, { passive: false });
 
   canvas.addEventListener('mousedown', e => {
     if (!$('#terminal').classList.contains('hidden')) return;
@@ -1018,6 +1229,8 @@ function bindFarmInput(canvas) {
     if (state.myHP.down) return;
     if (!farm.pointerLocked && !farm.isTouch) { requestLock(); return; }
     if (e.button === 0) {
+      farm.leftHeld = true;
+      farm.mining = null;
       farm.swing = .25;
       const w = curWeapon();
       sfx(w.sfx);
@@ -1026,6 +1239,9 @@ function bindFarmInput(canvas) {
         primaryAction();
       }
     }
+  });
+  window.addEventListener('mouseup', e => {
+    if (e.button === 0) { farm.leftHeld = false; farm.mining = null; }
   });
   document.addEventListener('mousemove', e => {
     if (!farm.pointerLocked) return;
@@ -1108,23 +1324,37 @@ function initJoystick() {
   window.addEventListener('touchcancel', end);
 }
 function doJump() {
+  if (farm.flying) return;
   if (!farm.grounded || state.myHP.down) return;
   farm.velY = 8.0;
   farm.grounded = false;
   sfx('jump');
 }
+/* ---------- 飞行模式（双击空格切换，全员可用） ---------- */
+function toggleFlying() {
+  if (state.myHP.down) return;
+  farm.flying = !farm.flying;
+  farm.velY = 0;
+  toast(farm.flying ? '🕊️ 飞行模式开启（空格上升 / Shift 下降，双击空格关闭）' : '🚶 飞行模式关闭');
+  sfx(farm.flying ? 'bow' : 'pop');
+  gsend({ t: 'pos', x: +farm.pos.x.toFixed(2), z: +farm.pos.z.toFixed(2), ry: +farm.farmer.rotation.y.toFixed(2), mv: 0, flying: farm.flying });
+}
 
 /* ---------- 武器 ---------- */
-function selectWeapon(i) {
+function selectWeapon(i, silent) {
   const ws = weapons();
-  weaponIdx = ((i % ws.length) + ws.length) % ws.length;
+  weaponIdx = Math.max(0, Math.min(i, ws.length - 1));
   farm.weapon = ws[weaponIdx].id;
+  farm.mining = null;
   setHandItem(farm.farmer, farm.weapon === 'peck' ? 'sword' : farm.weapon);
   buildHotbar();
   const w = ws[weaponIdx];
-  toast(`手持：${w.icon} ${w.name}`);
+  if (!silent) toast(`手持：${w.icon} ${w.name}`);
 }
-function cycleWeapon(d) { selectWeapon(weaponIdx + d); }
+function cycleWeapon(d) {
+  const ws = weapons();
+  selectWeapon(((weaponIdx + d) % ws.length + ws.length) % ws.length);
+}
 
 /* ---------- 攻击（屏幕中心射线） ---------- */
 function primaryAction() {
@@ -1141,8 +1371,23 @@ function primaryAction() {
   if (w.id === 'bow') { shootArrow(w); return; }
   farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
   farm.raycaster.far = w.range + 2;
-  resolveHit(w, false);
+  // 先打实体；没打中实体且准星对着方块 → 攻击方块（音频方块发声）
+  const hitSomething = resolveHit(w, false);
+  if (!hitSomething) {
+    const obj = centerBlockMesh();
+    if (obj) {
+      const type = obj.userData.placed;
+      if (NOTE_FREQS[type]) {
+        sfx._noteFreq = NOTE_FREQS[type];
+        sfx('note');
+        gsend({ t: 'playsound', freq: NOTE_FREQS[type] });
+      }
+      // 攻击也计入挖掘（按住左键连续挖）
+      tryMineOrBreakCenter();
+    }
+  }
 }
+
 function collectTargets() {
   const targets = [];
   for (const c of farm.chickens) {
@@ -1179,7 +1424,7 @@ function resolveHit(w, isGun) {
     for (const c of farm.chickens) if (!c.userData.down) probe_(c, null, .8);
     for (const [id, p] of state.players) if (!p.info.down) probe_(p.model, id, p.info.admin ? 1.5 : .8);
   }
-  if (!root) return;
+  if (!root) return false;
   const hp = root.position.clone(); hp.y += isPlayer ? 1.5 : .8;
   if (isPlayer) {
     gsend({ t: 'hit', target: 'player', id: pid, dmg: w.dmg, x: hp.x, y: hp.y, z: hp.z });
@@ -1192,10 +1437,11 @@ function resolveHit(w, isGun) {
     localProbeDamage(id, w.dmg, hp);
   } else {
     const svId = root.userData.server?.id;
-    if (!svId) return;
+    if (!svId) return false;
     gsend({ t: 'hit', target: 'chicken', id: svId, dmg: w.dmg, x: hp.x, y: hp.y, z: hp.z });
     localChickenDamage(svId, w.dmg, hp);
   }
+  return true;
 }
 function localChickenDamage(svId, dmg, at) {
   const st = state.chickenHP.get(svId) || { hp: chickenMaxHP, down: false };
@@ -1303,52 +1549,83 @@ function centerRay(far) {
   farm.raycaster.far = far;
   return farm.raycaster;
 }
-function tryMineOrBreakCenter() {
+// 准星指向的方块（玩家建造的），null=没有
+function centerBlockMesh() {
   centerRay(8 + farm.dist + 4);
-  const mineables = [];
-  farm.scene.traverse(o => { if (o.isMesh && (o.userData.ore || o.userData.placed)) mineables.push(o); });
-  const hits = farm.raycaster.intersectObjects(mineables, false);
-  if (!hits.length) { toast('视野中心没有可挖的方块（对准土堆/木堆/矿脉）'); return; }
-  const obj = hits[0].object;
-  const type = obj.userData.ore || obj.userData.placed;
-  sfx('break');
-  spawnHitParticles(obj.position, type === 'stone' ? 0x999999 : type === 'wood' ? 0x8a6b3f : 0x79553a);
-  if (obj.userData.placed) {
-    const key = obj.userData.key;
-    farm.blocks.delete(key);
-    farm.scene.remove(obj);
-    gsend({ t: 'block', op: 'del', x: obj.userData.bx, y: obj.userData.by, z: obj.userData.bz });
-  } else {
-    if (state.admin) {
-      obj.visible = false;
-      state.inv[type] = (state.inv[type] || 0) + 1;
-      toast(`+1 ${BLOCK_NAMES[type]}（背包：${state.inv[type]}）`);
-      setTimeout(() => { obj.visible = true; }, 30000);
-    } else {
-      toast('只能拆除玩家建造的方块', 'err');
+  const meshes = [...farm.blocks.values()].map(b => b.mesh);
+  const hits = farm.raycaster.intersectObjects(meshes, false);
+  return hits.length ? hits[0].object : null;
+}
+// 按住左键连续挖掘：到时间即破坏（MC 手感）。由 tick 调用。
+function updateMining(dt) {
+  if (!farm.leftHeld || state.myHP.down) { farm.mining = null; return; }
+  const w = curWeapon();
+  if (w.build) {
+    // 建造槽按住左键 → 连续放置（0.2s 冷却）
+    farm.mining = null;
+    if (farm.cooldown <= 0) {
+      farm.cooldown = PLACE_CD;
+      farm.swing = .25;
+      placeBlockCenter(w.build);
     }
+    return;
   }
+  if (w.mine || w.dmg > 0) {
+    const obj = centerBlockMesh();
+    if (!obj) { farm.mining = null; return; }
+    const key = obj.userData.key;
+    if (!farm.mining || farm.mining.key !== key) {
+      const type = obj.userData.placed;
+      const hard = (BLOCK_DEF[type] && BLOCK_DEF[type].hard) || (NOTE_FREQS[type] ? H.wood : H.stone);
+      farm.mining = { key, t: 0, hard, type };
+    }
+    farm.mining.t += dt;
+    // 挖掘进度粒子
+    if (Math.random() < dt * 8) {
+      spawnHitParticles(obj.position, farm.mining.type === 'obsidian' ? 0x30204a : 0x999999, 2);
+    }
+    if (farm.mining.t >= farm.mining.hard) {
+      farm.mining = null;
+      breakBlock(obj);
+    }
+    return;
+  }
+  farm.mining = null;
+}
+function breakBlock(obj) {
+  sfx('break');
+  const type = obj.userData.placed;
+  spawnHitParticles(obj.position, type === 'stone' ? 0x999999 : type === 'wood' ? 0x8a6b3f : 0x79553a);
+  const key = obj.userData.key;
+  farm.blocks.delete(key);
+  farm.scene.remove(obj);
+  gsend({ t: 'block', op: 'del', x: obj.userData.bx, y: obj.userData.by, z: obj.userData.bz });
+}
+// 单击挖掘入口（保持兼容：立刻开始计时，第一帧就登记 mining）
+function tryMineOrBreakCenter() {
+  const obj = centerBlockMesh();
+  if (!obj) return;
+  const type = obj.userData.placed;
+  const hard = (BLOCK_DEF[type] && BLOCK_DEF[type].hard) || (NOTE_FREQS[type] ? H.wood : H.stone);
+  farm.mining = { key: obj.userData.key, t: 0, hard, type };
 }
 // 准星指向的放置格（白色预览框共用）——返回 {bx,by,bz} 或 null
 function computePlaceCell() {
   centerRay(farm.dist + 12);
-  const ground = farm.scene.getObjectByName('ground');
+  const ground = farm.ground;
   const placedMeshes = [...farm.blocks.values()].map(b => b.mesh);
-  const hits = farm.raycaster.intersectObjects([ground, ...placedMeshes], false);
+  const hits = farm.raycaster.intersectObjects(ground ? [ground, ...placedMeshes] : placedMeshes, true);
   if (!hits.length) return null;
   const hit = hits[0];
   if (hit.distance > 8 + farm.dist + 2) return null;
   const n = hit.face.normal.clone();
   const p = hit.point.clone().addScaledVector(n, .5);
   const bx = Math.round(p.x), by = Math.max(0, Math.round(p.y - .5)), bz = Math.round(p.z);
-  if (Math.abs(bx) > WORLD / 2 - 2 || Math.abs(bz) > WORLD / 2 - 2 || by > 20) return null;
+  if (Math.abs(bx) > GROUND - 1 || Math.abs(bz) > GROUND - 1 || by > 64) return null;
   return { bx, by, bz };
 }
 function placeBlockCenter(type) {
-  if (!state.admin) {
-    if (state.materials <= 0) { toast('建造材料不足，明天添加一个探针可获得 +100', 'err'); return; }
-  }
-  // 管理员材料无限
+  // v0.5.0：全员无限材料，不再检查/扣减材料
   const cell = computePlaceCell();
   if (!cell) return;
   const { bx, by, bz } = cell;
@@ -1358,7 +1635,6 @@ function placeBlockCenter(type) {
   const myCellX = Math.round(farm.pos.x), myCellZ = Math.round(farm.pos.z);
   const myCellY = Math.floor(farm.pos.y);
   if (bx === myCellX && bz === myCellZ && by >= myCellY && by <= myCellY + 1) { toast('不能放在自己脚下'); return; }
-  if (!state.admin) { state.materials = Math.max(0, state.materials - 1); updateStatsPanel(); }
   addBlockMesh(key, bx, by, bz, type);
   gsend({ t: 'block', op: 'add', x: bx, y: by, z: bz, type });
   if (NOTE_FREQS[type]) { sfx._noteFreq = NOTE_FREQS[type]; sfx('note'); }
@@ -1539,8 +1815,6 @@ async function openJoinModal() {
       $('#pjCopy').onclick = () => copy('#pjCmd');
       $('#pjCopy2').onclick = () => copy('#pjRm');
       $('#pjDone').onclick = () => { closeModal(); pollProbesOnce(); };
-      // 每日奖励 +100 材料：立即同步，无需刷新页面
-      if (r.bonus) { gsend({ t: 'reqMaterials' }); toast(`🎉 今日首次添加探针，建造材料 +${r.bonus}！`); }
     } catch (e) { toast(e.message, 'err'); }
   };
 }
@@ -1579,14 +1853,25 @@ function tick() {
   }
   resolveCollisions();
 
-  // 跳跃/重力
+  // 跳跃/重力/飞行
   const prevY = farm.pos.y;
-  farm.velY -= 20 * dt;
-  farm.pos.y += farm.velY * dt;
-  farm.grounded = false;
-  if (farm.pos.y <= 0) { farm.pos.y = 0; farm.velY = 0; farm.grounded = true; }
+  if (farm.flying) {
+    // 飞行：重力关闭，空格上升 / Shift 下降
+    const flySpeed = sprint ? 14 : 8;
+    let vy = 0;
+    if (k.has('Space')) vy += flySpeed;
+    if (sprint) vy -= flySpeed;
+    farm.pos.y = Math.max(0, Math.min(60, farm.pos.y + vy * dt));
+    farm.velY = 0;
+    farm.grounded = farm.pos.y <= 0;
+  } else {
+    farm.velY -= 20 * dt;
+    farm.pos.y += farm.velY * dt;
+    farm.grounded = false;
+    if (farm.pos.y <= 0) { farm.pos.y = 0; farm.velY = 0; farm.grounded = true; }
+  }
   // 落在玩家方块上
-  for (const b of farm.blocks.values()) {
+  if (!farm.flying) for (const b of farm.blocks.values()) {
     const bp = b.mesh.position;
     if (Math.abs(bp.x - farm.pos.x) < .8 && Math.abs(bp.z - farm.pos.z) < .8) {
       const top = bp.y + .5;
@@ -1664,20 +1949,14 @@ function tick() {
     } else farm.ghost.visible = false;
   }
 
-  // 长按挖矿（触屏）
-  if (farm.mineHold) {
-    farm.mineHold.t += dt;
-    if (farm.mineHold.t > .5 && farm.cooldown <= 0) {
-      farm.mineHold.t = .15;
-      tryMineOrBreakCenter();
-    }
-  }
+  // 按住左键：连续挖掘 / 连续放置（MC 手感）
+  updateMining(dt);
 
   // 位置广播 10Hz
   const now = performance.now();
   if (now - lastSentPos > 100) {
     lastSentPos = now;
-    gsend({ t: 'pos', x: +farm.pos.x.toFixed(2), z: +farm.pos.z.toFixed(2), ry: +farm.farmer.rotation.y.toFixed(2), mv: moving ? 1 : 0 });
+    gsend({ t: 'pos', x: +farm.pos.x.toFixed(2), z: +farm.pos.z.toFixed(2), ry: +farm.farmer.rotation.y.toFixed(2), mv: moving ? 1 : 0, flying: farm.flying });
   }
 
   // 远程玩家插值
@@ -1737,8 +2016,8 @@ function tick() {
       cu.wingR.rotation.z = -cu.wingL.rotation.z;
       cu.head.position.y = 1.08 + Math.abs(Math.sin(cu.wob)) * .05;
     }
-    c.position.x = Math.max(-FENCE + 1.5, Math.min(FENCE - 1.5, c.position.x));
-    c.position.z = Math.max(-FENCE + 1.5, Math.min(FENCE - 1.5, c.position.z));
+    c.position.x = Math.max(-GROUND + 1.5, Math.min(GROUND - 1.5, c.position.x));
+    c.position.z = Math.max(-GROUND + 1.5, Math.min(GROUND - 1.5, c.position.z));
     // 贴合建筑顶面行走；遇到 2 格以上的墙就掉头
     if (!c.userData.down) {
       const gy = groundYAt(c.position.x, c.position.z);
@@ -1927,21 +2206,26 @@ function onResize() {
 function buildHotbar() {
   const hb = $('#hotbar');
   const ws = weapons();
-  hb.innerHTML = ws.map((w, i) => {
-    let key = i + 1;
-    if (state.admin) {
-      if (w.note) key = w.note;                       // 1-7 发音方块
-      else if (w.id === 'dirt') key = 8;
-      else if (w.id === 'wood') key = 9;
-      else if (w.id === 'stone') key = 0;
-      else key = '';                                   // 武器：点击或 Q 切换
-    }
+  const page = curPage();
+  const start = page * PAGE_SIZE;
+  const slots = ws.slice(start, start + PAGE_SIZE);
+  hb.innerHTML = slots.map((w, i) => {
+    const gi = start + i;
     return `
-    <button class="slot ${i === weaponIdx ? 'sel' : ''}" data-w="${i}" title="${w.name}${w.range > 10 ? ' · 远程' : ' · 近战'}${w.mine ? ' · 左键挖' : ''}${w.build ? ' · 放置' : ''}${w.note ? ' · 按键 ' + w.note + ' 发音' : ''}">
-      <span class="num">${key}</span><span class="emoji">${w.icon}</span><span class="nm">${w.name}</span>
+    <button class="slot ${gi === weaponIdx ? 'sel' : ''}" data-w="${gi}" title="${w.name}${w.range > 10 ? ' · 远程' : ' · 近战'}${w.mine ? ' · 按住左键挖掘' : ''}${w.build ? ' · 按住左键连续放置' : ''}${w.note ? ' · 发音方块' : ''}">
+      <span class="num">${i + 1}</span><span class="emoji">${w.icon}</span><span class="nm">${w.name}</span>
     </button>`;
   }).join('');
   hb.querySelectorAll('.slot').forEach(b => b.onclick = () => selectWeapon(parseInt(b.dataset.w, 10)));
+  const pager = $('#hotbarPager');
+  if (pager) {
+    const n = pageCount();
+    let dots = '';
+    for (let p = 0; p < n; p++) dots += `<span class="pdot${p === page ? ' on' : ''}"></span>`;
+    pager.innerHTML = `<button class="pgbtn" id="pgPrev" title="上一页 [">◀</button><span class="pginfo">${page + 1}/${n}</span>${dots}<button class="pgbtn" id="pgNext" title="下一页 ]">▶</button>`;
+    pager.querySelector('#pgPrev').onclick = () => gotoPage(page - 1);
+    pager.querySelector('#pgNext').onclick = () => gotoPage(page + 1);
+  }
 }
 function updateHud() {
   $('#adminBtn').textContent = state.admin ? '☰ 管理 (E)' : '🔑 登录';
@@ -2175,6 +2459,7 @@ function openAdmin() {
     <div style="display:flex;gap:8px;margin-bottom:14px;flex-wrap:wrap">
       <button class="mc-btn sm" id="admAdd">+ 添加服务器（新鸡）</button>
       <button class="mc-btn sm" id="admJoin">📡 部署公开探针</button>
+      <button class="mc-btn sm" id="admKeys">🤖 AI Skill API Key</button>
       <button class="mc-btn sm" id="admPw">修改管理密码</button>
     </div>
     ${state.servers.length ? `<table class="sv-table">
@@ -2185,6 +2470,7 @@ function openAdmin() {
   `);
   $('#admAdd').onclick = () => openForm(null);
   $('#admJoin').onclick = () => openJoinModal();
+  $('#admKeys').onclick = () => openKeysModal();
   $('#admPw').onclick = openPwModal;
   $$('#modal [data-pact]').forEach(b => {
     b.onclick = async () => {
@@ -2219,6 +2505,56 @@ function openAdmin() {
         if (term.serverId === s.id) termClose(true);
         await api('api/servers/' + s.id, { method: 'DELETE' });
         await loadAdminData(); farm.syncChickens(); updateHud(); toast('已删除'); openAdmin();
+      }
+    };
+  });
+}
+
+/* ---------- AI Skill API Key 管理 ---------- */
+async function openKeysModal() {
+  let keys = [];
+  try { keys = await api('api/keys'); } catch (e) {}
+  const rows = keys.map(k => `<tr data-key="${esc(k.key)}">
+    <td><b>${esc(k.name)}</b><br><span class="mono">${esc(k.key.slice(0, 10))}…${esc(k.key.slice(-6))}</span></td>
+    <td class="mono">${esc((k.createdAt || '').slice(0, 10))}</td>
+    <td><div class="row-actions">
+      <button class="ic-btn" data-kact="copy" title="复制完整 Key">📋</button>
+      <button class="ic-btn danger" data-kact="del" title="删除">🗑</button>
+    </div></td>
+  </tr>`).join('');
+  openModal(`
+    <button class="modal-close">×</button>
+    <h2>🤖 AI Skill API Key</h2>
+    <p class="confirm-msg">API Key 用于 AI Agent 通过 HTTP 批量建造（POST /api/skill/blocks，Header X-API-Key）。限速每 key 2000 ops/秒。接入文档见 README「Skill 接入」。</p>
+    <div class="field" style="display:flex;gap:8px">
+      <input id="akName" type="text" placeholder="Key 名称（如 claude-builder）" maxlength="32" style="flex:1">
+      <button class="mc-btn sm" id="akGen">+ 生成</button>
+    </div>
+    <div id="akNew" class="notice hidden" style="word-break:break-all"></div>
+    ${keys.length ? `<table class="sv-table"><thead><tr><th>Key</th><th>创建日期</th><th style="text-align:right">操作</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="notice">还没有 API Key。</div>'}
+    <div class="modal-actions"><button class="mc-btn" id="akBack">← 返回管理</button></div>`);
+  $('#akBack').onclick = () => openAdmin();
+  $('#akGen').onclick = async () => {
+    try {
+      const r = await api('api/keys', { method: 'POST', body: { name: $('#akName').value.trim() || 'skill' } });
+      const box = $('#akNew');
+      box.classList.remove('hidden');
+      box.innerHTML = `✅ 已生成（只显示这一次，请立即保存）：<b class="mono">${esc(r.key)}</b> <button class="mc-btn sm" id="akCopyNew">📋 复制</button>`;
+      $('#akCopyNew').onclick = () => navigator.clipboard.writeText(r.key).then(() => toast('已复制'));
+      setTimeout(() => openKeysModal(), 100);
+    } catch (e) { toast(e.message, 'err'); }
+  };
+  $$('#modal [data-kact]').forEach(b => {
+    b.onclick = async () => {
+      const key = b.closest('tr').dataset.key;
+      if (b.dataset.kact === 'copy') {
+        try { await navigator.clipboard.writeText(key); toast('已复制完整 Key'); } catch (e) { toast('复制失败', 'err'); }
+      }
+      if (b.dataset.kact === 'del') {
+        if (!await uiConfirm('删除这个 API Key？使用它的 AI Agent 将立即失去建造权限。', { title: '删除 Key', okText: '删除', danger: true })) return;
+        await api('api/keys?key=' + encodeURIComponent(key), { method: 'DELETE' });
+        toast('已删除');
+        openKeysModal();
       }
     };
   });

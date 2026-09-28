@@ -12,7 +12,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -25,268 +24,7 @@ import (
 //go:embed all:web
 var embeddedWeb embed.FS
 
-var version = "0.4.0"
-
-// ---------------- 数据模型 ----------------
-
-type Server struct {
-	ID         string    `json:"id"`
-	Name       string    `json:"name"`
-	Host       string    `json:"host"`
-	Port       int       `json:"port"`
-	User       string    `json:"user"`
-	AuthKind   string    `json:"authKind"` // password | key
-	Password   string    `json:"password,omitempty"`
-	PrivateKey string    `json:"privateKey,omitempty"`
-	KeyPass    string    `json:"keyPass,omitempty"`
-	Note       string    `json:"note,omitempty"`
-	Region     string    `json:"region,omitempty"`
-	LastUsed   time.Time `json:"lastUsed,omitempty"`
-	CreatedAt  time.Time `json:"createdAt"`
-}
-
-type FarmPlayer struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Materials int    `json:"materials"`
-	LastBonus string `json:"lastBonus,omitempty"` // 最近一次探针奖励日期 YYYY-MM-DD
-	IP        string `json:"ip"`
-	CreatedAt string `json:"createdAt,omitempty"`
-}
-
-type Store struct {
-	mu        sync.Mutex
-	path      string
-	Password  string
-	Servers   []*Server
-	Blocks    map[string]string      `json:"blocks,omitempty"` // "x,y,z" -> dirt|wood|stone|-
-	ProbeList []*Probe               `json:"probes,omitempty"`
-	Players   map[string]*FarmPlayer `json:"players,omitempty"` // ip -> player
-}
-
-// GetOrCreatePlayer 按 IP 深度绑定玩家身份：同一 IP 下次进来资源/名字还在
-func (s *Store) GetOrCreatePlayer(ip string) *FarmPlayer {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.Players == nil {
-		s.Players = map[string]*FarmPlayer{}
-	}
-	if p, ok := s.Players[ip]; ok {
-		return p
-	}
-	b := make([]byte, 2)
-	rand.Read(b)
-	p := &FarmPlayer{
-		ID:        newID()[:10],
-		Name:      fmt.Sprintf("农夫-%s", hex.EncodeToString(b)),
-		Materials: 50,
-		IP:        ip,
-		CreatedAt: time.Now().Format(time.RFC3339),
-	}
-	s.Players[ip] = p
-	go s.save()
-	return p
-}
-
-func (s *Store) PlayerByIP(ip string) *FarmPlayer {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.Players == nil {
-		return nil
-	}
-	return s.Players[ip]
-}
-
-func (s *Store) SaveAsync() { go s.save() }
-
-// ColumnTop 返回某列 (x,z) 最高方块顶面 y（无方块为 0）
-func (s *Store) ColumnTop(x, z int) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	top := 0
-	prefix1 := fmt.Sprintf("%d,", x)
-	for k, v := range s.Blocks {
-		if v == "-" || v == "" {
-			continue
-		}
-		var bx, by, bz int
-		if _, err := fmt.Sscanf(k, "%d,%d,%d", &bx, &by, &bz); err == nil && bx == x && bz == z && by+1 > top {
-			top = by + 1
-		}
-	}
-	_ = prefix1
-	return top
-}
-
-func (s *Store) Probes() []*Probe {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*Probe, len(s.ProbeList))
-	copy(out, s.ProbeList)
-	return out
-}
-
-func (s *Store) AddProbe(pr *Probe) {
-	s.mu.Lock()
-	s.ProbeList = append(s.ProbeList, pr)
-	s.mu.Unlock()
-	go s.save()
-}
-
-func (s *Store) DeleteProbe(id string) {
-	s.mu.Lock()
-	out := s.ProbeList[:0]
-	for _, v := range s.ProbeList {
-		if v.ID != id {
-			out = append(out, v)
-		}
-	}
-	s.ProbeList = out
-	s.mu.Unlock()
-	go s.save()
-}
-
-func (s *Store) ProbeByToken(token string) *Probe {
-	if token == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range s.ProbeList {
-		if v.Token == token {
-			return v
-		}
-	}
-	return nil
-}
-
-func (s *Store) ProbeByID(id string) *Probe {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range s.ProbeList {
-		if v.ID == id {
-			return v
-		}
-	}
-	return nil
-}
-
-func (s *Store) BlocksCopy() map[string]string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make(map[string]string, len(s.Blocks))
-	for k, v := range s.Blocks {
-		if v != "-" {
-			out[k] = v
-		}
-	}
-	return out
-}
-
-func (s *Store) BlockGet(key string) string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.Blocks[key]
-}
-
-func (s *Store) SetBlock(key, val string) {
-	s.mu.Lock()
-	if s.Blocks == nil {
-		s.Blocks = map[string]string{}
-	}
-	s.Blocks[key] = val
-	s.mu.Unlock()
-	go s.save()
-}
-
-func loadStore(dir string) (*Store, error) {
-	s := &Store{path: filepath.Join(dir, "data.json"), Password: "admin888"}
-	if b, err := os.ReadFile(s.path); err == nil {
-		if err := json.Unmarshal(b, s); err != nil {
-			return nil, err
-		}
-		s.path = filepath.Join(dir, "data.json")
-		return s, nil
-	} else if !os.IsNotExist(err) {
-		return nil, err
-	}
-	if env := os.Getenv("SSHWEB_PASSWORD"); env != "" {
-		s.Password = env
-	} else {
-		log.Printf("[sshweb] 警告: 未设置 SSHWEB_PASSWORD，正在使用默认密码 admin888，请尽快在界面右上角修改")
-	}
-	if err := s.save(); err != nil {
-		return nil, err
-	}
-	return s, nil
-}
-
-func (s *Store) save() error {
-	b, _ := json.MarshalIndent(s, "", "  ")
-	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, b, 0o600); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.path)
-}
-
-func (s *Store) List() []*Server {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := make([]*Server, len(s.Servers))
-	copy(out, s.Servers)
-	return out
-}
-
-func (s *Store) Get(id string) *Server {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range s.Servers {
-		if v.ID == id {
-			return v
-		}
-	}
-	return nil
-}
-
-func (s *Store) Put(sv *Server) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i, v := range s.Servers {
-		if v.ID == sv.ID {
-			sv.CreatedAt, sv.LastUsed = v.CreatedAt, v.LastUsed
-			s.Servers[i] = sv
-			return s.save()
-		}
-	}
-	s.Servers = append(s.Servers, sv)
-	return s.save()
-}
-
-func (s *Store) Delete(id string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	out := s.Servers[:0]
-	for _, v := range s.Servers {
-		if v.ID != id {
-			out = append(out, v)
-		}
-	}
-	s.Servers = out
-	return s.save()
-}
-
-func (s *Store) Touch(id string) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for _, v := range s.Servers {
-		if v.ID == id {
-			v.LastUsed = time.Now()
-			s.save()
-			return
-		}
-	}
-}
+var version = "0.5.0"
 
 func newID() string {
 	b := make([]byte, 8)
@@ -341,13 +79,6 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
-}
-
-func (s *Store) SetPassword(pw string) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.Password = pw
-	return s.save()
 }
 
 func (a *App) authOK(r *http.Request) bool {
@@ -598,6 +329,10 @@ func main() {
 	mux.HandleFunc("/api/probe/unlock", app.handleProbeUnlock)
 	mux.HandleFunc("/api/probe/unlockpass", app.handleProbeUnlockPass)
 	mux.HandleFunc("/api/probes/public", app.handleProbesPublic)
+	mux.HandleFunc("/api/keys", app.require(app.handleAPIKeys))
+	mux.HandleFunc("/api/skill/blocks", app.handleSkillBlocks)
+	mux.HandleFunc("/api/skill/player", app.handleSkillPlayer)
+	mux.HandleFunc("/api/skill/state", app.handleSkillState)
 	mux.HandleFunc("/probe/agent.sh", app.handleProbeAgentScript)
 	mux.HandleFunc("/probe/uninstall.sh", app.handleProbeUninstallScript)
 

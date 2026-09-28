@@ -18,7 +18,7 @@ RUN mkdir -p /data && chown sshweb:sshweb /data
 USER sshweb
 VOLUME ["/data"]
 EXPOSE 45678
-# 首次启动的管理密码；已存在数据目录时以 data.json 为准
+# 首次启动的管理密码；已存在数据目录时以 SQLite(sshweb.db) 为准
 ENV SSHWEB_PASSWORD=""
 ENTRYPOINT ["/app/sshweb"]
 CMD ["-listen", ":45678", "-data", "/data"]
