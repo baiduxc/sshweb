@@ -26,6 +26,11 @@ type FarmPlayer struct {
 	LastBonus string `json:"lastBonus,omitempty"`
 	IP        string `json:"ip"`
 	CreatedAt string `json:"createdAt,omitempty"`
+	// 断线重连原地恢复：最后位置
+	HasPos bool    `json:"hasPos,omitempty"`
+	PX     float64 `json:"px,omitempty"`
+	PY     float64 `json:"py,omitempty"`
+	PZ     float64 `json:"pz,omitempty"`
 }
 
 // ---------------- 数据模型 ----------------
@@ -79,13 +84,13 @@ func openDB(dir string) (*sql.DB, error) {
 	return db, nil
 }
 
-// legacyStore 旧 data.json 的结构（迁移用）
+// legacyStore 旧 data.json 的结构（迁移用；tag 必须与旧版序列化键一致，否则迁移丢数据）
 type legacyStore struct {
 	Password  string
 	Servers   []*Server
-	Blocks    map[string]string
-	ProbeList []*Probe
-	Players   map[string]*FarmPlayer
+	Blocks    map[string]string      `json:"blocks"`
+	ProbeList []*Probe               `json:"probes"`
+	Players   map[string]*FarmPlayer `json:"players"`
 }
 
 func loadStore(dir string) (*Store, error) {
@@ -205,6 +210,50 @@ func loadStore(dir string) (*Store, error) {
 			s.Players[ip] = &p
 		}
 	}
+
+	// 灾难恢复（只执行一次）：v0.5.0 的迁移 bug 曾丢探针/玩家数据（legacyStore 缺 json tag）。
+	// data.json.migrated 存在且未恢复过时，把其中 SQLite 里缺失的探针/服务器/玩家按 ID 合并回来。
+	didRecover, _ := s.metaGet("recovered_migrated")
+	if didRecover == "" {
+		if b, err := os.ReadFile(jsonPath + ".migrated"); err == nil {
+			var old legacyStore
+			if json.Unmarshal(b, &old) == nil {
+				np, ns, npl := 0, 0, 0
+				haveP := map[string]bool{}
+				for _, pr := range s.ProbeList {
+					haveP[pr.ID] = true
+				}
+				for _, pr := range old.ProbeList {
+					if pr != nil && !haveP[pr.ID] {
+						s.ProbeList = append(s.ProbeList, pr)
+						np++
+					}
+				}
+				haveS := map[string]bool{}
+				for _, sv := range s.Servers {
+					haveS[sv.ID] = true
+				}
+				for _, sv := range old.Servers {
+					if sv != nil && !haveS[sv.ID] {
+						s.Servers = append(s.Servers, sv)
+						ns++
+					}
+				}
+				for ip, pl := range old.Players {
+					if _, ok := s.Players[ip]; !ok && pl != nil {
+						s.Players[ip] = pl
+						npl++
+					}
+				}
+				if np+ns+npl > 0 {
+					if err := s.save(); err == nil {
+						log.Printf("[store] 从 data.json.migrated 恢复：%d 探针 / %d 服务器 / %d 玩家", np, ns, npl)
+					}
+				}
+			}
+			s.metaSet("recovered_migrated", "1")
+		}
+	}
 	return s, nil
 }
 
@@ -212,6 +261,10 @@ func (s *Store) metaGet(k string) (string, error) {
 	var v string
 	err := s.db.QueryRow("SELECT v FROM meta WHERE k=?", k).Scan(&v)
 	return v, err
+}
+
+func (s *Store) metaSet(k, v string) {
+	s.db.Exec("INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)", k, v)
 }
 
 // save 把密码/服务器/探针/玩家整体写回 SQLite（数据量小，全量替换简单可靠）
@@ -261,6 +314,15 @@ func (s *Store) saveLocked() error {
 }
 
 func (s *Store) SaveAsync() { go s.save() }
+
+// UpdatePlayerPos 记录游客最后位置（内存即时，落盘由 SaveAsync 节流）
+func (s *Store) UpdatePlayerPos(ip string, x, y, z float64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if p, ok := s.Players[ip]; ok && p != nil {
+		p.HasPos, p.PX, p.PY, p.PZ = true, x, y, z
+	}
+}
 
 // ---------------- 方块（直写 SQLite） ----------------
 

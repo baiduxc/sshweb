@@ -1391,7 +1391,7 @@ function toggleFlying() {
   farm.velY = 0;
   toast(farm.flying ? '🕊️ 飞行模式开启（空格上升 / Shift 下降，双击空格关闭）' : '🚶 飞行模式关闭');
   sfx(farm.flying ? 'bow' : 'pop');
-  gsend({ t: 'pos', x: +farm.pos.x.toFixed(2), z: +farm.pos.z.toFixed(2), ry: +farm.farmer.rotation.y.toFixed(2), mv: 0, flying: farm.flying });
+  gsend({ t: 'pos', x: +farm.pos.x.toFixed(2), y: +farm.pos.y.toFixed(2), z: +farm.pos.z.toFixed(2), ry: +farm.farmer.rotation.y.toFixed(2), mv: 0, flying: farm.flying });
 }
 
 /* ---------- 武器 ---------- */
@@ -2039,7 +2039,7 @@ function tick() {
   const now = performance.now();
   if (now - lastSentPos > 100) {
     lastSentPos = now;
-    gsend({ t: 'pos', x: +farm.pos.x.toFixed(2), z: +farm.pos.z.toFixed(2), ry: +farm.farmer.rotation.y.toFixed(2), mv: moving ? 1 : 0, flying: farm.flying });
+    gsend({ t: 'pos', x: +farm.pos.x.toFixed(2), y: +farm.pos.y.toFixed(2), z: +farm.pos.z.toFixed(2), ry: +farm.farmer.rotation.y.toFixed(2), mv: moving ? 1 : 0, flying: farm.flying });
   }
 
   // 远程玩家插值

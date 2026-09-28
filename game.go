@@ -34,11 +34,14 @@ type gameClient struct {
 	RY      float64 `json:"ry"`
 	Flying  bool    `json:"flying"`
 
-	rec  *FarmPlayer // IP 绑定的持久档案（游客）
-	conn *websocket.Conn
-	send chan []byte
-	hub  *gameHub
-	once sync.Once
+	rec         *FarmPlayer // IP 绑定的持久档案（游客）
+	IP          string
+	adminKey    string
+	lastPosSave time.Time
+	conn        *websocket.Conn
+	send        chan []byte
+	hub         *gameHub
+	once        sync.Once
 }
 
 type playerHPState struct {
@@ -54,6 +57,7 @@ type gameHub struct {
 	chickens map[string]*chickenState
 	probeHP  map[string]*chickenState
 	playerHP map[string]*playerHPState
+	lastPos  map[string][3]float64 // id -> 最后位置（断线重连原地恢复）
 	store    *Store
 	probeRT  *probeRuntime
 	limiter  *rateLimiter
@@ -63,7 +67,8 @@ func newGameHub(store *Store) *gameHub {
 	return &gameHub{
 		clients: map[*gameClient]struct{}{}, chickens: map[string]*chickenState{},
 		probeHP: map[string]*chickenState{}, playerHP: map[string]*playerHPState{},
-		store: store, limiter: &rateLimiter{},
+		lastPos: map[string][3]float64{},
+		store:   store, limiter: &rateLimiter{},
 	}
 }
 
@@ -182,6 +187,14 @@ func (c *gameClient) infoWithHP(h *gameHub) playerInfo {
 		pi.Materials = c.rec.Materials
 	}
 	return pi
+}
+
+// rememberedPos 返回进程内记住的最后位置
+func (h *gameHub) rememberedPos(key string) ([3]float64, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	p, ok := h.lastPos[key]
+	return p, ok
 }
 
 func (h *gameHub) join(c *gameClient) {
@@ -357,7 +370,27 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 	switch m["t"] {
 	case "pos":
 		c.X, c.Z, c.RY = f64(m["x"]), f64(m["z"]), f64(m["ry"])
+		c.Y = f64(m["y"])
 		c.Flying, _ = m["flying"].(bool)
+		h.mu.Lock()
+		h.lastPos[c.ID] = [3]float64{c.X, c.Y, c.Z}
+		h.mu.Unlock()
+		// 游客位置节流落盘（每 10s 一次），断线/重启后原地恢复
+		if c.Admin {
+			h.mu.Lock()
+			h.lastPos[c.adminKey] = [3]float64{c.X, c.Y, c.Z}
+			h.mu.Unlock()
+		}
+		if c.rec != nil && c.IP != "" {
+			now := time.Now()
+			if now.Sub(c.lastPosSave) > 10*time.Second {
+				c.lastPosSave = now
+				go func(ip string, x, y, z float64) {
+					h.store.UpdatePlayerPos(ip, x, y, z)
+					h.store.SaveAsync()
+				}(c.IP, c.X, c.Y, c.Z)
+			}
+		}
 		h.broadcast(map[string]any{"t": "pos", "id": c.ID, "x": c.X, "z": c.Z, "ry": c.RY, "mv": m["mv"], "flying": c.Flying}, c)
 
 	case "explode":
@@ -619,20 +652,34 @@ func (a *App) handleGameWS(w http.ResponseWriter, r *http.Request) {
 	}
 	if admin {
 		c.Name = "农场主"
-		c.X = float64(rand.Intn(10) - 5)
-		c.Z = 12 + float64(rand.Intn(6)-3)
+		// 断线重连原地恢复（进程内记住最后位置）
+		if p, ok := a.game.rememberedPos(c.Name + "@" + ip); ok {
+			c.X, c.Y, c.Z = p[0], p[1], p[2]
+		} else {
+			c.X = float64(rand.Intn(10) - 5)
+			c.Z = 12 + float64(rand.Intn(6)-3)
+		}
 	} else {
 		rec := a.store.GetOrCreatePlayer(ip) // IP 深度绑定：资源/名字持久
 		c.rec = rec
+		c.IP = ip
 		c.ID = rec.ID
 		c.Name = rec.Name
-		c.X = float64(rand.Intn(10) - 5)
-		c.Z = 12 + float64(rand.Intn(6)-3)
-		// 复活点抬高：防止地面被建筑铺满
-		if top := a.store.ColumnTop(int(c.X), int(c.Z)); top > 0 {
-			c.Y = float64(top)
+		// 断线重连原地恢复：内存最近位置 > 持久档案 > 随机出生
+		if p, ok := a.game.rememberedPos(c.ID); ok {
+			c.X, c.Y, c.Z = p[0], p[1], p[2]
+		} else if rec.HasPos {
+			c.X, c.Y, c.Z = rec.PX, rec.PY, rec.PZ
+		} else {
+			c.X = float64(rand.Intn(10) - 5)
+			c.Z = 12 + float64(rand.Intn(6)-3)
+			// 复活点抬高：防止地面被建筑铺满
+			if top := a.store.ColumnTop(int(c.X), int(c.Z)); top > 0 {
+				c.Y = float64(top)
+			}
 		}
 	}
+	c.adminKey = c.Name + "@" + ip
 	a.game.join(c)
 	go c.writePump()
 	c.readPump()
