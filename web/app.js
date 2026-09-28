@@ -972,10 +972,10 @@ function setDown(c, down, hp, maxHP) {
 // 某列 (x,z) 最高方块顶面 y（无方块=0）——复活点/落点计算用
 function groundYAt(x, z) {
   let top = 0;
-  const bx = Math.round(x), bz = Math.round(z);
-  for (const b of farm.blocks.values()) {
-    const m = b.mesh.position;
-    if (Math.round(m.x) === bx && Math.round(m.z) === bz && m.y + .5 > top) top = m.y + .5;
+  const s = colIndex.get(Math.round(x) + ',' + Math.round(z));
+  if (s) for (const key of s) {
+    const b = farm.blocks.get(key);
+    if (b && b.y + 1 > top) top = b.y + 1;
   }
   return top;
 }
@@ -1422,10 +1422,10 @@ function primaryAction() {
   const hitSomething = resolveHit(w, false);
   if (!hitSomething) {
     const obj = centerBlockMesh();
-    if (obj && NOTE_FREQS[obj.userData.placed]) {
-      sfx._noteFreq = NOTE_FREQS[obj.userData.placed];
+    if (obj && NOTE_FREQS[obj.type]) {
+      sfx._noteFreq = NOTE_FREQS[obj.type];
       sfx('note');
-      gsend({ t: 'playsound', freq: NOTE_FREQS[obj.userData.placed] });
+      gsend({ t: 'playsound', freq: NOTE_FREQS[obj.type] });
     }
   }
 }
@@ -1591,14 +1591,56 @@ function centerRay(far) {
   farm.raycaster.far = far;
   return farm.raycaster;
 }
-// 准星指向的方块（玩家建造的），null=没有；忽略相机与玩家之间的命中（身后的方块）
+/* 体素 DDA 射线（Amanatides-Woo）：从 (ox,oy,oz) 沿单位向量 (dx,dy,dz) 步进，
+ * 返回第一个命中的方块（t ≥ minT），O(射线长度) 与方块总数无关。
+ * 方块 (x,y,z) 占据 [x-.5,x+.5]×[y,y+1]×[z-.5,z+.5]；y 平移 .5 后即为整数网格。 */
+const _vox = { hit: false, bx: 0, by: 0, bz: 0, nx: 0, ny: 0, nz: 0, t: 0 };
+function raycastVoxels(ox, oy, oz, dx, dy, dz, maxT, minT) {
+  minT = minT || 0;
+  const sx = ox, sy = oy - .5, sz = oz;
+  let cx = Math.round(sx), cy = Math.round(sy), cz = Math.round(sz);
+  const stepX = dx > 1e-9 ? 1 : dx < -1e-9 ? -1 : 0;
+  const stepY = dy > 1e-9 ? 1 : dy < -1e-9 ? -1 : 0;
+  const stepZ = dz > 1e-9 ? 1 : dz < -1e-9 ? -1 : 0;
+  const tDx = stepX ? Math.abs(1 / dx) : Infinity;
+  const tDy = stepY ? Math.abs(1 / dy) : Infinity;
+  const tDz = stepZ ? Math.abs(1 / dz) : Infinity;
+  let tMx = stepX > 0 ? (cx + .5 - sx) * tDx : stepX < 0 ? (sx - (cx - .5)) * tDx : Infinity;
+  let tMy = stepY > 0 ? (cy + .5 - sy) * tDy : stepY < 0 ? (sy - (cy - .5)) * tDy : Infinity;
+  let tMz = stepZ > 0 ? (cz + .5 - sz) * tDz : stepZ < 0 ? (sz - (cz - .5)) * tDz : Infinity;
+  let nx = 0, ny = 0, nz = 0, t = 0;
+  for (let i = 0; i < 1024; i++) {
+    if (t >= minT) {
+      const b = farm.blocks.get(cx + ',' + cy + ',' + cz);
+      if (b) {
+        _vox.hit = true; _vox.bx = cx; _vox.by = cy; _vox.bz = cz;
+        _vox.nx = nx; _vox.ny = ny; _vox.nz = nz; _vox.t = t;
+        _vox.type = b.type;
+        return _vox;
+      }
+    }
+    if (tMx < tMy && tMx < tMz) { cx += stepX; t = tMx; tMx += tDx; nx = -stepX; ny = 0; nz = 0; }
+    else if (tMy < tMz) { cy += stepY; t = tMy; tMy += tDy; nx = 0; ny = -stepY; nz = 0; }
+    else { cz += stepZ; t = tMz; tMz += tDz; nx = 0; ny = 0; nz = -stepZ; }
+    if (t > maxT || cy < -2 || cy > 70) break;
+  }
+  _vox.hit = false;
+  return _vox;
+}
+const _blkPosV = new THREE.Vector3();
+// 准星指向的方块（描述符 {key,type,bx,by,bz,pos,nx,ny,nz}），null=没有
 function centerBlockMesh() {
-  centerRay(8 + farm.dist + 4);
-  const meshes = [...farm.blocks.values()].map(b => b.mesh);
-  const hits = farm.raycaster.intersectObjects(meshes, false);
+  farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
+  const o = farm.raycaster.ray.origin, d = farm.raycaster.ray.direction;
   const camToPlayer = farm.camera.position.distanceTo(_chestV.set(farm.pos.x, farm.pos.y + 1, farm.pos.z));
-  const hit = hits.find(h => h.distance > camToPlayer - 1.5);
-  return hit ? hit.object : null;
+  const r = raycastVoxels(o.x, o.y, o.z, d.x, d.y, d.z, 8 + farm.dist + 4, Math.max(0, camToPlayer - 1.5));
+  if (!r.hit) return null;
+  return {
+    key: r.bx + ',' + r.by + ',' + r.bz, type: r.type,
+    bx: r.bx, by: r.by, bz: r.bz,
+    nx: r.nx, ny: r.ny, nz: r.nz,
+    pos: _blkPosV.set(r.bx, r.by + .5, r.bz),
+  };
 }
 // 按住左键连续挖掘：到时间即破坏（MC 手感）。由 tick 调用。
 function updateMining(dt) {
@@ -1629,21 +1671,20 @@ function updateMining(dt) {
   farm.mining = null;
 }
 function breakBlock(obj) {
-  const type = obj.userData.placed;
-  const key = obj.userData.key;
-  const bx = obj.userData.bx, by = obj.userData.by, bz = obj.userData.bz;
-  farm.blocks.delete(key);
-  farm.scene.remove(obj);
+  const type = obj.type;
+  const key = obj.key;
+  const bx = obj.bx, by = obj.by, bz = obj.bz;
+  removeBlockLocal(key);
   gsend({ t: 'block', op: 'del', x: bx, y: by, z: bz });
   if (type === 'tnt') {
     // 💥 炸药爆炸：本地立即演出，服务端负责炸掉周围方块并广播
-    explosionFx(obj.position);
+    explosionFx(_blkPosV.set(bx, by + .5, bz));
     gsend({ t: 'explode', x: bx, y: by, z: bz });
     return;
   }
   sfx('break');
   if (NOTE_FREQS[type]) { sfx._noteFreq = NOTE_FREQS[type]; sfx('note'); gsend({ t: 'playsound', freq: NOTE_FREQS[type] }); }
-  spawnHitParticles(obj.position, type === 'obsidian' ? 0x30204a : type === 'stone' ? 0x999999 : type === 'wood' ? 0x8a6b3f : 0x79553a);
+  spawnHitParticles(_blkPosV.set(bx, by + .5, bz), type === 'obsidian' ? 0x30204a : type === 'stone' ? 0x999999 : type === 'wood' ? 0x8a6b3f : 0x79553a);
 }
 /* 💥 爆炸演出：闪光球 + 大量粒子 + 低频轰鸣 + 镜头震动 */
 function explosionFx(at) {
@@ -1677,19 +1718,22 @@ function tryMineOrBreakCenter() {
 // 准星指向的放置格（白色预览框共用）——返回 {bx,by,bz} 或 null
 const _chestV = new THREE.Vector3();
 function computePlaceCell() {
-  centerRay(farm.dist + 14);
-  const ground = farm.ground;
-  const placedMeshes = [...farm.blocks.values()].map(b => b.mesh);
-  const hits = farm.raycaster.intersectObjects(ground ? [ground, ...placedMeshes] : placedMeshes, true);
-  if (!hits.length) return null;
-  // 忽略相机与玩家之间的命中（否则准星会落在自己身后的地面，放置不跟手）
+  farm.raycaster.setFromCamera(new THREE.Vector2(0, 0), farm.camera);
+  const o = farm.raycaster.ray.origin, d = farm.raycaster.ray.direction;
   const camToPlayer = farm.camera.position.distanceTo(_chestV.set(farm.pos.x, farm.pos.y + 1, farm.pos.z));
-  const hit = hits.find(h => h.distance > camToPlayer - 1.5 && h.face);
-  if (!hit) return null;
-  const n = hit.face.normal.clone();
-  const p = hit.point.clone().addScaledVector(n, .5);
-  const bx = Math.round(p.x), by = Math.max(0, Math.round(p.y - .5)), bz = Math.round(p.z);
-  if (Math.abs(bx) > GROUND - 1 || Math.abs(bz) > GROUND - 1 || by > 64) return null;
+  const minT = Math.max(0, camToPlayer - 1.5);
+  let bx, by, bz, nx = 0, ny = 0, nz = 0;
+  const r = raycastVoxels(o.x, o.y, o.z, d.x, d.y, d.z, farm.dist + 14, minT);
+  if (r.hit) {
+    bx = r.bx + r.nx; by = r.by + r.ny; bz = r.bz + r.nz;
+  } else if (d.y < -1e-6) {
+    // 没打中方块 → 地面 y=0（方块底面 y=0，故 by=0）
+    const t = (0.0 - o.y) / d.y;
+    if (t > minT && t < farm.dist + 14) {
+      bx = Math.round(o.x + d.x * t); by = 0; bz = Math.round(o.z + d.z * t);
+    } else return null;
+  } else return null;
+  if (Math.abs(bx) > GROUND - 1 || Math.abs(bz) > GROUND - 1 || by < 0 || by > 64) return null;
   // 以玩家为圆心的触达距离（MC 手感 ~8 格）
   const dx = bx - farm.pos.x, dz = bz - farm.pos.z, dy = by + .5 - (farm.pos.y + 1);
   if (dx * dx + dz * dz + dy * dy > 8 * 8) return null;
@@ -1712,20 +1756,99 @@ function placeBlockCenter(type) {
   else sfx('place');
   updateHud();
 }
+/* ---------- v0.5.8 高性能方块渲染 ----------
+ * 按材质 InstancedMesh 合批：5 万方块 ≈ 30 个 draw call（原来 5 万个）。
+ * 列空间索引 colIndex："x,z" → Set(key)，碰撞/落地/groundYAt 只查玩家附近几列。
+ * 体素 DDA 射线 raycastVoxels：复杂度只与射线长度有关，与方块总数无关。 */
+const _boxGeo = new THREE.BoxGeometry(1, 1, 1);
+const _m4 = new THREE.Matrix4();
+const inst = {
+  meshes: new Map(),   // type -> InstancedMesh
+  slots: new Map(),    // type -> [key,...]（instanceId → key）
+  cap: new Map(),      // type -> 容量
+  keyInfo: new Map(),  // key -> {type, id}
+};
+function instMesh(type) {
+  let m = inst.meshes.get(type);
+  if (!m) {
+    const cap = 1024;
+    m = new THREE.InstancedMesh(_boxGeo, BLOCK_MATS[type] || BLOCK_MATS.dirt, cap);
+    m.count = 0; m.frustumCulled = false; m.castShadow = true; m.receiveShadow = true;
+    m.userData.blockType = type;
+    inst.meshes.set(type, m); inst.slots.set(type, []); inst.cap.set(type, cap);
+    farm.scene.add(m);
+  }
+  return m;
+}
+function instGrow(type) {
+  const old = inst.meshes.get(type), cap = inst.cap.get(type) * 2;
+  const m = new THREE.InstancedMesh(_boxGeo, old.material, cap);
+  m.count = old.count; m.frustumCulled = false; m.castShadow = true; m.receiveShadow = true;
+  m.userData.blockType = type;
+  m.instanceMatrix.array.set(old.instanceMatrix.array.subarray(0, old.count * 16));
+  farm.scene.remove(old); old.dispose(); farm.scene.add(m);
+  inst.meshes.set(type, m); inst.cap.set(type, cap);
+  return m;
+}
+function instAdd(key, x, y, z, type) {
+  let m = instMesh(type);
+  const slots = inst.slots.get(type);
+  if (slots.length >= inst.cap.get(type)) m = instGrow(type);
+  const id = slots.length;
+  slots.push(key);
+  _m4.makeTranslation(x, y + .5, z);
+  m.setMatrixAt(id, _m4);
+  m.count = slots.length;
+  m.instanceMatrix.needsUpdate = true;
+  inst.keyInfo.set(key, { type, id });
+}
+function instRemove(key) {
+  const info = inst.keyInfo.get(key);
+  if (!info) return;
+  const { type, id } = info;
+  const m = inst.meshes.get(type), slots = inst.slots.get(type);
+  const last = slots.length - 1;
+  if (id !== last) { // 把最后一个实例搬到空位（swap-remove）
+    m.getMatrixAt(last, _m4);
+    m.setMatrixAt(id, _m4);
+    const movedKey = slots[last];
+    slots[id] = movedKey;
+    const mi = inst.keyInfo.get(movedKey);
+    if (mi) mi.id = id;
+  }
+  slots.pop();
+  m.count = slots.length;
+  m.instanceMatrix.needsUpdate = true;
+  inst.keyInfo.delete(key);
+}
+const colIndex = new Map(); // "x,z" → Set(key)
+function colAdd(x, z, key) {
+  const k = x + ',' + z;
+  let s = colIndex.get(k);
+  if (!s) { s = new Set(); colIndex.set(k, s); }
+  s.add(key);
+}
+function colDel(x, z, key) {
+  const k = x + ',' + z;
+  const s = colIndex.get(k);
+  if (s) { s.delete(key); if (!s.size) colIndex.delete(k); }
+}
+function colAt(x, z) { return colIndex.get(Math.round(x) + ',' + Math.round(z)); }
 function addBlockMesh(key, x, y, z, type) {
-  const mesh = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), BLOCK_MATS[type] || BLOCK_MATS.dirt);
-  mesh.position.set(x, y + .5, z);
-  mesh.castShadow = true; mesh.receiveShadow = true;
-  mesh.userData.placed = type;
-  mesh.userData.key = key;
-  mesh.userData.bx = x; mesh.userData.by = y; mesh.userData.bz = z;
-  farm.scene.add(mesh);
-  farm.blocks.set(key, { mesh, type });
+  instAdd(key, x, y, z, type);
+  farm.blocks.set(key, { type, x, y, z });
+  colAdd(x, z, key);
+}
+function removeBlockLocal(key) {
+  const b = farm.blocks.get(key);
+  if (!b) return;
+  instRemove(key);
+  farm.blocks.delete(key);
+  colDel(b.x, b.z, key);
 }
 function applyRemoteBlock(key, val, fromWS) {
   if (val === '-') {
-    const b = farm.blocks.get(key);
-    if (b) { farm.scene.remove(b.mesh); farm.blocks.delete(key); if (fromWS) sfx('break'); }
+    if (farm.blocks.has(key)) { removeBlockLocal(key); if (fromWS) sfx('break'); }
     return;
   }
   if (farm.blocks.has(key)) return;
@@ -1941,13 +2064,20 @@ function tick() {
     farm.grounded = false;
     if (farm.pos.y <= 0) { farm.pos.y = 0; farm.velY = 0; farm.grounded = true; }
   }
-  // 落在玩家方块上
-  if (!farm.flying) for (const b of farm.blocks.values()) {
-    const bp = b.mesh.position;
-    if (Math.abs(bp.x - farm.pos.x) < .8 && Math.abs(bp.z - farm.pos.z) < .8) {
-      const top = bp.y + .5;
-      if (prevY >= top - .15 && farm.pos.y < top && farm.velY <= 0) {
-        farm.pos.y = top; farm.velY = 0; farm.grounded = true;
+  // 落在玩家方块上（列索引：只查脚下附近的列，5 万方块也 O(1)）
+  if (!farm.flying) {
+    const cx = Math.round(farm.pos.x), cz = Math.round(farm.pos.z);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      const s = colIndex.get((cx + dx) + ',' + (cz + dz));
+      if (!s) continue;
+      for (const key of s) {
+        const b = farm.blocks.get(key);
+        if (!b) continue;
+        if (Math.abs(b.x - farm.pos.x) >= .8 || Math.abs(b.z - farm.pos.z) >= .8) continue;
+        const top = b.y + 1;
+        if (prevY >= top - .15 && farm.pos.y < top && farm.velY <= 0) {
+          farm.pos.y = top; farm.velY = 0; farm.grounded = true;
+        }
       }
     }
   }
@@ -2207,11 +2337,18 @@ function resolveCollisions() {
     if (Math.abs(farm.pos.x - col.x) > col.hx + 2 || Math.abs(farm.pos.z - col.z) > col.hz + 2) continue;
     check(col);
   }
-  for (const b of farm.blocks.values()) {
-    const bp = b.mesh.position;
-    if (Math.abs(bp.x - farm.pos.x) > 2 || Math.abs(bp.z - farm.pos.z) > 2) continue;
-    if (bp.y - .5 >= py + 1.75) continue; // 方块整体在头顶上方 → 可以从下面走过
-    check({ x: bp.x, z: bp.z, hx: .5, hz: .5, top: bp.y + .5 });
+  { // 玩家方块碰撞：只查附近 3x3 列（空间索引）
+    const cx = Math.round(farm.pos.x), cz = Math.round(farm.pos.z);
+    for (let dx = -1; dx <= 1; dx++) for (let dz = -1; dz <= 1; dz++) {
+      const s = colIndex.get((cx + dx) + ',' + (cz + dz));
+      if (!s) continue;
+      for (const key of s) {
+        const b = farm.blocks.get(key);
+        if (!b) continue;
+        if (b.y >= py + 1.75) continue; // 方块整体在头顶上方 → 可以从下面走过
+        check({ x: b.x, z: b.z, hx: .5, hz: .5, top: b.y + 1 });
+      }
+    }
   }
   for (const c of farm.chickens) {
     if (c.userData.down) continue;
@@ -2235,12 +2372,12 @@ function labelOccluded(targetPos) {
   const camDist = _occDir.length();
   if (camDist < 1) return false;
   _occDir.normalize();
-  farm.raycaster.set(farm.camera.position, _occDir);
-  farm.raycaster.far = camDist - .6; // 留一点余量，避免自身方块误判
-  const meshes = [...farm.blocks.values()].map(b => b.mesh);
-  if (farm.ground) meshes.push(farm.ground);
-  const hits = farm.raycaster.intersectObjects(meshes, true);
-  return hits.length > 0;
+  const o = farm.camera.position;
+  const maxT = camDist - .6; // 留一点余量，避免自身方块误判
+  const r = raycastVoxels(o.x, o.y, o.z, _occDir.x, _occDir.y, _occDir.z, maxT, 0);
+  if (r.hit) return true;
+  // 地形：地面平面 y=0 在 maxT 内被穿过也算遮挡（相机在地面下的情况极少，忽略）
+  return false;
 }
 function updateLabelPositions() {
   if (!farm.camera) return;
