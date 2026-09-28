@@ -2262,6 +2262,9 @@ function updateLabelPositions() {
       ud._occ = labelOccluded(_v2.set(target3d.x, target3d.y + 1.5, target3d.z));
     }
     if (ud._occ) { el.style.display = 'none'; return false; }
+    // 卡片随距离缩放：近大远小（8 格内原大，45 格缩到 55%）
+    const sc = Math.max(.55, Math.min(1, 1 - (d - 8) * .012));
+    el.style.transform = `translate(-50%,-130%) scale(${sc.toFixed(3)})`;
     proj(target3d, yOff, el);
     return true;
   };

@@ -24,7 +24,7 @@ import (
 //go:embed all:web
 var embeddedWeb embed.FS
 
-var version = "0.5.6"
+var version = "0.5.7"
 
 func newID() string {
 	b := make([]byte, 8)
@@ -339,9 +339,9 @@ func main() {
 	webFS, _ := fs.Sub(embeddedWeb, "web")
 	fileServer := http.FileServer(http.FS(webFS))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/" {
-			w.Header().Set("Cache-Control", "no-cache")
-		}
+		// 静态资源一律协商缓存：浏览器/CDN 每次回源验证（304 无流量），
+		// 避免升级后用户拿到旧 JS（曾导致生产环境缓存 4 小时旧版）
+		w.Header().Set("Cache-Control", "no-cache, must-revalidate")
 		fileServer.ServeHTTP(w, r)
 	})
 
