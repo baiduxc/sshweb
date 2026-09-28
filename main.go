@@ -25,7 +25,7 @@ import (
 //go:embed all:web
 var embeddedWeb embed.FS
 
-var version = "0.3.2"
+var version = "0.3.3"
 
 // ---------------- 数据模型 ----------------
 

@@ -1027,7 +1027,7 @@ function bindFarmInput(canvas) {
   document.addEventListener('mousemove', e => {
     if (!farm.pointerLocked) return;
     farm.yaw -= e.movementX * .0025;
-    farm.pitch = Math.max(-.55, Math.min(1.2, farm.pitch + e.movementY * .0022));
+    farm.pitch = Math.max(-1.35, Math.min(1.2, farm.pitch + e.movementY * .0022));
   });
 
   // 触屏：右半屏拖动视角 + 点按攻击
@@ -1048,7 +1048,7 @@ function bindFarmInput(canvas) {
         const dx = t.clientX - touchView.x, dy = t.clientY - touchView.y;
         touchView.moved += Math.abs(dx) + Math.abs(dy);
         farm.yaw -= dx * .006;
-        farm.pitch = Math.max(-.55, Math.min(1.2, farm.pitch + dy * .005));
+        farm.pitch = Math.max(-1.35, Math.min(1.2, farm.pitch + dy * .005));
         touchView.x = t.clientX; touchView.y = t.clientY;
       }
     }
