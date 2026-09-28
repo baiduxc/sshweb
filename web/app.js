@@ -2252,28 +2252,29 @@ function updateLabelPositions() {
     el.style.left = ((_v.x * .5 + .5) * w) + 'px';
     el.style.top = ((-_v.y * .5 + .5) * h) + 'px';
   };
+  // 所有头顶卡片：距离超 60 格不显示；视线被方块/地形挡住不显示（不穿墙）
+  const nowT = performance.now();
+  const showLabel = (target3d, ud, el, yOff) => {
+    const d = target3d.distanceTo(farm.pos);
+    if (d > 60) { el.style.display = 'none'; return false; }
+    if (ud._occT === undefined || nowT - ud._occT > 200) {
+      ud._occT = nowT;
+      ud._occ = labelOccluded(_v2.set(target3d.x, target3d.y + 1.5, target3d.z));
+    }
+    if (ud._occ) { el.style.display = 'none'; return false; }
+    proj(target3d, yOff, el);
+    return true;
+  };
   for (const s of state.servers) {
     const el = farm.labelEls.get(s.id), c = farm.chickenById.get(s.id);
-    if (el && c) proj(c.position, c.userData.down ? 1.0 : 1.9, el);
+    if (el && c) showLabel(c.position, c.userData, el, c.userData.down ? 1.0 : 1.9);
   }
   for (const pr of state.probes) {
     const el = farm.labelEls.get('probe:' + pr.id), c = farm.probeById.get(pr.id);
-    if (!el || !c) continue;
-    // 距离剔除：超过 60 格不显示
-    const d = c.position.distanceTo(farm.pos);
-    if (d > 60) { el.style.display = 'none'; continue; }
-    // 墙体遮挡：射线被方块/地面挡住则隐藏（每 200ms 检测一次）
-    const nowT = performance.now();
-    const ud = c.userData;
-    if (ud._occT === undefined || nowT - ud._occT > 200) {
-      ud._occT = nowT;
-      ud._occ = labelOccluded(_v2.set(c.position.x, c.position.y + 1.5, c.position.z));
-    }
-    if (ud._occ) { el.style.display = 'none'; continue; }
-    proj(c.position, c.userData.down ? 1.0 : 2.0, el);
+    if (el && c) showLabel(c.position, c.userData, el, c.userData.down ? 1.0 : 2.0);
   }
   for (const [, p] of state.players) {
-    if (p.labelEl) proj(p.model.position, 3.1, p.labelEl);
+    if (p.labelEl) showLabel(p.model.position, p.model.userData, p.labelEl, 3.1);
   }
   // 我自己的标签
   const me = myAvatar();

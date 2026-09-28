@@ -24,7 +24,7 @@ import (
 //go:embed all:web
 var embeddedWeb embed.FS
 
-var version = "0.5.5"
+var version = "0.5.6"
 
 func newID() string {
 	b := make([]byte, 8)
