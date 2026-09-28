@@ -94,6 +94,12 @@ function sfx(name) {
         o.type = 'sine'; o.frequency.setValueAtTime(600, now); o.frequency.setValueAtTime(900, now + .08);
         g.gain.setValueAtTime(.15, now); g.gain.exponentialRampToValueAtTime(.001, now + .2);
         o.connect(g); o.start(now); o.stop(now + .21); break;
+      case 'note': {
+        const f = sfx._noteFreq || 440;
+        o.type = 'triangle'; o.frequency.setValueAtTime(f, now);
+        g.gain.setValueAtTime(.22, now); g.gain.exponentialRampToValueAtTime(.001, now + .5);
+        o.connect(g); o.start(now); o.stop(now + .52); break;
+      }
       case 'jump':
         o.type = 'sine'; o.frequency.setValueAtTime(300, now); o.frequency.exponentialRampToValueAtTime(500, now + .08);
         g.gain.setValueAtTime(.06, now); g.gain.exponentialRampToValueAtTime(.001, now + .1);
@@ -391,7 +397,14 @@ const TEX = {
 };
 const mat = tex => new THREE.MeshLambertMaterial({ map: tex });
 const matC = color => new THREE.MeshLambertMaterial({ color });
-const BLOCK_MATS = { dirt: mat(TEX.dirt), wood: mat(TEX.wood), stone: mat(TEX.cobble) };
+const NOTE_FREQS = { note1: 261.63, note2: 293.66, note3: 329.63, note4: 349.23, note5: 392.0, note6: 440.0, note7: 493.88 };
+const NOTE_COLORS = { note1: 0xe05252, note2: 0xe08a3c, note3: 0xe0c93c, note4: 0x5cb85c, note5: 0x4a90d9, note6: 0x6a5acd, note7: 0xa94ad9 };
+const BLOCK_MATS = {
+  dirt: mat(TEX.dirt), wood: mat(TEX.wood), stone: mat(TEX.cobble),
+  note1: matC(NOTE_COLORS.note1), note2: matC(NOTE_COLORS.note2), note3: matC(NOTE_COLORS.note3),
+  note4: matC(NOTE_COLORS.note4), note5: matC(NOTE_COLORS.note5), note6: matC(NOTE_COLORS.note6),
+  note7: matC(NOTE_COLORS.note7),
+};
 
 /* ================= 场景 ================= */
 const WORLD = 120;
@@ -416,12 +429,17 @@ const BUILD_SLOTS = [
   { id: 'wood', name: '木头', icon: '🪵', range: 8, dmg: 0, cd: .2, sfx: 'place', build: 'wood' },
   { id: 'stone', name: '石头', icon: '🪨', range: 8, dmg: 0, cd: .2, sfx: 'place', build: 'stone' },
 ];
+const NOTE_SLOTS = [1, 2, 3, 4, 5, 6, 7].map(n => ({
+  id: 'note' + n, name: ['Do', 'Re', 'Mi', 'Fa', 'Sol', 'La', 'Si'][n - 1], icon: '🎵', range: 8, dmg: 0, cd: .2,
+  sfx: 'note', build: 'note' + n, note: n,
+}));
 const WEAPONS_ADMIN = [
   { id: 'sword', name: '木剑', icon: '🗡️', range: 7, dmg: 20, cd: 1, sfx: 'swing' },
   { id: 'bow', name: '弓箭', icon: '🏹', range: 60, dmg: 16, cd: 1, sfx: 'bow' },
   { id: 'gun', name: '手枪', icon: '🔫', range: 80, dmg: 12, cd: 1, sfx: 'shoot' },
   { id: 'pick', name: '镐子', icon: '⛏️', range: 6, dmg: 4, cd: 1, sfx: 'swing', mine: true },
   ...BUILD_SLOTS,
+  ...NOTE_SLOTS,
 ];
 const WEAPONS_GUEST = [
   { id: 'peck', name: '攻击', icon: '👊', range: 4, dmg: 20, cd: 1, sfx: 'peck' },
@@ -431,7 +449,7 @@ const WEAPONS_GUEST = [
 let weaponIdx = 0;
 function weapons() { return state.admin ? WEAPONS_ADMIN : WEAPONS_GUEST; }
 function curWeapon() { return weapons()[Math.min(weaponIdx, weapons().length - 1)]; }
-const BLOCK_NAMES = { dirt: '泥土', wood: '木头', stone: '石头' };
+const BLOCK_NAMES = { dirt: '泥土', wood: '木头', stone: '石头', note1: 'Do', note2: 'Re', note3: 'Mi', note4: 'Fa', note5: 'Sol', note6: 'La', note7: 'Si' };
 
 function initFarm() {
   const host = $('#farmHost');
@@ -483,7 +501,7 @@ function initFarm() {
       if (i < n) for (const ry of [.55, 1.05]) {
         const rail = new THREE.Mesh(new THREE.BoxGeometry(2, .18, .12), woodMat);
         rail.position.set(x1 + dx * (t + .5 / n), ry, z1 + dz * (t + .5 / n));
-        rail.rotation.y = ang;
+        rail.rotation.y = Math.atan2(-dz, dx); // 横杆与围栏走向平行
         rail.scale.x = len / n / 2;
         scene.add(rail);
       }
@@ -552,32 +570,6 @@ function initFarm() {
     const lv2 = new THREE.Mesh(new THREE.BoxGeometry(2.4, 1.6, 2.4), mat(TEX.leaves));
     lv2.position.set(tx, th + 3.1, tz); lv2.castShadow = true; scene.add(lv2);
   }
-  // 资源堆
-  for (const [ox, oz] of [[45, 45], [-45, 45], [45, -45], [-48, -46]]) {
-    for (let i = 0; i < 6; i++) {
-      const st = new THREE.Mesh(new THREE.BoxGeometry(1.6, 1.6, 1.6), mat(TEX.stone));
-      st.position.set(ox + (Math.random() - .5) * 8, .8, oz + (Math.random() - .5) * 8);
-      st.castShadow = true; st.userData.ore = 'stone'; scene.add(st);
-    }
-  }
-  for (const [ox, oz] of [[-38, 0], [38, 5]]) {
-    for (let i = 0; i < 4; i++) {
-      const lg = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.2, 1.2), mat(TEX.wood));
-      lg.position.set(ox + (Math.random() - .5) * 5, .6, oz + (Math.random() - .5) * 5);
-      lg.castShadow = true; lg.userData.ore = 'wood'; scene.add(lg);
-    }
-  }
-  for (const [ox, oz] of [[8, 38], [-8, -36]]) {
-    for (let i = 0; i < 5; i++) {
-      const dt = new THREE.Mesh(new THREE.BoxGeometry(1.2, .8, 1.2), mat(TEX.dirt));
-      dt.position.set(ox + (Math.random() - .5) * 6, .4, oz + (Math.random() - .5) * 6);
-      dt.castShadow = true; dt.userData.ore = 'dirt'; scene.add(dt);
-    }
-  }
-  const pond = new THREE.Mesh(new THREE.BoxGeometry(9, .2, 7), mat(TEX.water));
-  pond.position.set(20, .05, 20); scene.add(pond);
-  farm.colliders.push({ x: 20, z: 20, hx: 4.5, hz: 3.5, top: .1 });
-
   // 云
   for (let i = 0; i < 10; i++) {
     const cw = 6 + Math.random() * 10;
@@ -645,8 +637,8 @@ function setHandItem(model, weaponId) {
   if (!hand) return;
   hand.clear();
   let mesh = null;
-  if (weaponId === 'dirt' || weaponId === 'wood' || weaponId === 'stone') {
-    mesh = new THREE.Mesh(new THREE.BoxGeometry(.4, .4, .4), BLOCK_MATS[weaponId] || BLOCK_MATS.dirt);
+  if (BLOCK_MATS[weaponId]) {
+    mesh = new THREE.Mesh(new THREE.BoxGeometry(.4, .4, .4), BLOCK_MATS[weaponId]);
     mesh.position.y = .2;
     hand.add(mesh);
     return;
@@ -1001,8 +993,19 @@ function bindFarmInput(canvas) {
     if (e.code === 'KeyF') { interactNear(); return; }
     if (e.code === 'Space') { e.preventDefault(); doJump(); return; }
     if (e.code.startsWith('Digit')) {
-      const n = parseInt(e.code.slice(5), 10);
-      if (n >= 1 && n <= weapons().length) selectWeapon(n - 1);
+      const n = e.code === 'Digit0' ? 10 : parseInt(e.code.slice(5), 10);
+      const ws = weapons();
+      if (state.admin) {
+        // 管理员：1-7 = 发音方块 Do Re Mi Fa Sol La Si
+        if (n >= 1 && n <= 7) {
+          const idx = ws.findIndex(w => w.id === 'note' + n);
+          if (idx >= 0) selectWeapon(idx);
+        } else if (n === 8 || n === 9 || n === 10) {
+          const map = { 8: 'dirt', 9: 'wood', 10: 'stone' };
+          const idx = ws.findIndex(w => w.id === map[n]);
+          if (idx >= 0) selectWeapon(idx);
+        }
+      } else if (n >= 1 && n <= ws.length) selectWeapon(n - 1);
     }
     farm.keys.add(e.code);
   });
@@ -1342,11 +1345,10 @@ function computePlaceCell() {
   return { bx, by, bz };
 }
 function placeBlockCenter(type) {
-  if (state.admin) {
-    if ((state.inv[type] || 0) <= 0) { toast(`没有${BLOCK_NAMES[type]}，用镐子左键挖`, 'err'); return; }
-  } else {
+  if (!state.admin) {
     if (state.materials <= 0) { toast('建造材料不足，明天添加一个探针可获得 +100', 'err'); return; }
   }
+  // 管理员材料无限
   const cell = computePlaceCell();
   if (!cell) return;
   const { bx, by, bz } = cell;
@@ -1356,11 +1358,11 @@ function placeBlockCenter(type) {
   const myCellX = Math.round(farm.pos.x), myCellZ = Math.round(farm.pos.z);
   const myCellY = Math.floor(farm.pos.y);
   if (bx === myCellX && bz === myCellZ && by >= myCellY && by <= myCellY + 1) { toast('不能放在自己脚下'); return; }
-  if (state.admin) state.inv[type]--;
-  else { state.materials = Math.max(0, state.materials - 1); updateStatsPanel(); }
+  if (!state.admin) { state.materials = Math.max(0, state.materials - 1); updateStatsPanel(); }
   addBlockMesh(key, bx, by, bz, type);
   gsend({ t: 'block', op: 'add', x: bx, y: by, z: bz, type });
-  sfx('place');
+  if (NOTE_FREQS[type]) { sfx._noteFreq = NOTE_FREQS[type]; sfx('note'); }
+  else sfx('place');
   updateHud();
 }
 function addBlockMesh(key, x, y, z, type) {
@@ -1382,7 +1384,10 @@ function applyRemoteBlock(key, val, fromWS) {
   if (farm.blocks.has(key)) return;
   const parts = key.split(',').map(Number);
   addBlockMesh(key, parts[0], parts[1], parts[2], val);
-  if (fromWS) sfx('place');
+  if (fromWS) {
+    if (NOTE_FREQS[val]) { sfx._noteFreq = NOTE_FREQS[val]; sfx('note'); }
+    else sfx('place');
+  }
 }
 
 /* ---------- F 交互：倒地鸡（管理员；探针鸡不需要 F 查看） ---------- */
@@ -1534,6 +1539,8 @@ async function openJoinModal() {
       $('#pjCopy').onclick = () => copy('#pjCmd');
       $('#pjCopy2').onclick = () => copy('#pjRm');
       $('#pjDone').onclick = () => { closeModal(); pollProbesOnce(); };
+      // 每日奖励 +100 材料：立即同步，无需刷新页面
+      if (r.bonus) { gsend({ t: 'reqMaterials' }); toast(`🎉 今日首次添加探针，建造材料 +${r.bonus}！`); }
     } catch (e) { toast(e.message, 'err'); }
   };
 }
@@ -1846,6 +1853,7 @@ function resolveCollisions() {
   for (const b of farm.blocks.values()) {
     const bp = b.mesh.position;
     if (Math.abs(bp.x - farm.pos.x) > 2 || Math.abs(bp.z - farm.pos.z) > 2) continue;
+    if (bp.y - .5 >= py + 1.75) continue; // 方块整体在头顶上方 → 可以从下面走过
     check({ x: bp.x, z: bp.z, hx: .5, hz: .5, top: bp.y + .5 });
   }
   for (const c of farm.chickens) {
@@ -1919,10 +1927,20 @@ function onResize() {
 function buildHotbar() {
   const hb = $('#hotbar');
   const ws = weapons();
-  hb.innerHTML = ws.map((w, i) => `
-    <button class="slot ${i === weaponIdx ? 'sel' : ''}" data-w="${i}" title="${w.name}${w.range > 10 ? ' · 远程' : ' · 近战'}${w.mine ? ' · 左键挖矿' : ''}${w.build ? ' · 放置方块' : ''}">
-      <span class="num">${i + 1}</span><span class="emoji">${w.icon}</span><span class="nm">${w.name}</span>
-    </button>`).join('');
+  hb.innerHTML = ws.map((w, i) => {
+    let key = i + 1;
+    if (state.admin) {
+      if (w.note) key = w.note;                       // 1-7 发音方块
+      else if (w.id === 'dirt') key = 8;
+      else if (w.id === 'wood') key = 9;
+      else if (w.id === 'stone') key = 0;
+      else key = '';                                   // 武器：点击或 Q 切换
+    }
+    return `
+    <button class="slot ${i === weaponIdx ? 'sel' : ''}" data-w="${i}" title="${w.name}${w.range > 10 ? ' · 远程' : ' · 近战'}${w.mine ? ' · 左键挖' : ''}${w.build ? ' · 放置' : ''}${w.note ? ' · 按键 ' + w.note + ' 发音' : ''}">
+      <span class="num">${key}</span><span class="emoji">${w.icon}</span><span class="nm">${w.name}</span>
+    </button>`;
+  }).join('');
   hb.querySelectorAll('.slot').forEach(b => b.onclick = () => selectWeapon(parseInt(b.dataset.w, 10)));
 }
 function updateHud() {

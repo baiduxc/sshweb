@@ -314,6 +314,13 @@ func (c *gameClient) readPump() {
 	}
 }
 
+func isValidNote(typ string) bool {
+	if len(typ) != 5 {
+		return false
+	}
+	return typ[4] >= '1' && typ[4] <= '7'
+}
+
 func f64(v any) float64 {
 	f, _ := v.(float64)
 	return f
@@ -405,6 +412,12 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 		h.mu.Unlock()
 		h.broadcast(map[string]any{"t": "chickenState", "id": id, "hp": chickenMaxHP, "down": false}, nil)
 
+	case "reqMaterials":
+		// 客户端请求同步材料数（如添加探针获得奖励后）
+		if c.rec != nil {
+			c.sendMsg(map[string]any{"t": "materials", "n": c.rec.Materials})
+		}
+
 	case "rename":
 		name, _ := m["name"].(string)
 		name = strings.TrimSpace(name)
@@ -442,7 +455,7 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 		val := ""
 		switch op {
 		case "add":
-			if typ != "dirt" && typ != "wood" && typ != "stone" {
+			if typ != "dirt" && typ != "wood" && typ != "stone" && !(strings.HasPrefix(typ, "note") && isValidNote(typ)) {
 				return
 			}
 			// 游客：服务端权威扣材料
