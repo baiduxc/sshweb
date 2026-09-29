@@ -349,7 +349,7 @@ function onGameMsg(m) {
     case 'block': applyRemoteBlock(`${m.x},${m.y},${m.z}`, m.op === 'del' ? '-' : m.type, true); break;
     case 'clearblocks': clearAllBlocksLocal(); break;
     case 'chickenLock': {
-      const c = farm.chickenById.get(m.id);
+      const c = chickenByIdAny(m.id);
       if (m.lock) {
         farm.chickenLocks.set(m.id, { x: m.x, z: m.z });
         if (c) { // 召唤：立即传送到锁定位置
@@ -1128,7 +1128,7 @@ farm.updateLabels = function (force) {
         `<div class="prow dim2">输入查看密码解锁（右上角登录处）</div>` +
         (hpst.down ? '<div class="pdown">💀 倒地</div>' : hearts(hpst.hp, chickenMaxHP));
     } else {
-      const nm = pr.name || pr.hostname || '探针';
+      const nm = (farm.chickenLocks.has(pr.id) ? '📍 ' : '') + (pr.name || pr.hostname || '探针');
       const memPct = pr.memTotal ? Math.round(pr.memUsed / pr.memTotal * 100) : 0;
       const diskPct = pr.diskTotal ? Math.round(pr.diskUsed / pr.diskTotal * 100) : 0;
       const cpuModel = pr.cpuModel ? `${pr.cpuModel}${pr.cpuCores ? ' ×' + pr.cpuCores : ''}` : '';
@@ -1909,10 +1909,18 @@ function interactNear() {
   if (!best) return;
   openChickenMenu(best);
 }
-/* 管理员：召唤并锁定 / 解锁小鸡（管理面板按钮触发，召唤到管理员当前位置） */
+/* 管理员：召唤并锁定 / 解锁小鸡（管理面板按钮触发，召唤到管理员当前位置；服务器鸡和探针鸡都支持） */
 function summonAndLock(id) {
   if (!farm.inited) { toast('先进入农场再召唤'); return; }
   gsend({ t: 'chickenLock', id, lock: true, x: +farm.pos.x.toFixed(1), z: +farm.pos.z.toFixed(1) });
+}
+function chickenByIdAny(id) {
+  return farm.chickenById.get(id) || farm.probeById.get(id) || null;
+}
+function lockIdOfChicken(c) {
+  if (!c.userData.isProbe && c.userData.server) return c.userData.server.id;
+  if (c.userData.isProbe && c.userData.probe) return c.userData.probe.id;
+  return null;
 }
 function unlockChicken(id) {
   gsend({ t: 'chickenLock', id, lock: false });
@@ -2232,7 +2240,8 @@ function tick() {
     if (w.fleeing > 0) w.fleeing -= dt;
     w.timer -= dt;
     if (w.timer <= 0) { w.dir = Math.random() * Math.PI * 2; w.timer = 2 + Math.random() * 4; w.stop = Math.random() < .3; }
-    const lock = !c.userData.isProbe && c.userData.server ? farm.chickenLocks.get(c.userData.server.id) : null;
+    const lockId = lockIdOfChicken(c);
+    const lock = lockId ? farm.chickenLocks.get(lockId) : null;
     const toFarmer = _v.copy(farm.pos).sub(c.position);
     const dFar = toFarmer.length();
     let spd = w.stop && w.fleeing <= 0 ? 0 : w.speed;
@@ -2268,8 +2277,9 @@ function tick() {
     }
     c.position.x = Math.max(-GROUND + 1.5, Math.min(GROUND - 1.5, c.position.x));
     c.position.z = Math.max(-GROUND + 1.5, Math.min(GROUND - 1.5, c.position.z));
-    if (!c.userData.isProbe && c.userData.server) {
-      const lk = farm.chickenLocks.get(c.userData.server.id);
+    {
+      const lid = lockIdOfChicken(c);
+      const lk = lid ? farm.chickenLocks.get(lid) : null;
       if (lk) { // 硬约束：绝不超出锚点 3 格
         const dx = c.position.x - lk.x, dz = c.position.z - lk.z;
         const d = Math.hypot(dx, dz);
@@ -2737,6 +2747,8 @@ function openAdmin() {
       <td>${pr.online ? '<span class="tag ok">在线</span>' : '<span class="tag bad">离线</span>'}</td>
       <td><div class="row-actions">
         <button class="ic-btn" data-pact="view" title="查看状态">📊</button>
+        <button class="ic-btn" data-pact="summon" title="${farm.chickenLocks.has(pr.id) ? '重新召唤到我站的位置（已锁定 ±3 格）' : '召唤到我站的位置并锁定'}">📍</button>
+        ${farm.chickenLocks.has(pr.id) ? '<button class="ic-btn" data-pact="unlock" title="解锁，恢复自由漫游">🔓</button>' : ''}
         <button class="ic-btn danger" data-pact="del" title="移除探针">🗑</button>
       </div></td>
     </tr>`;
@@ -2792,6 +2804,17 @@ function openAdmin() {
       if (b.dataset.pact === 'view') {
         const pr = state.probes.find(x => x.id === id);
         closeModal(); openProbeCard(pr);
+      }
+      if (b.dataset.pact === 'summon') {
+        const pr = state.probes.find(x => x.id === id);
+        summonAndLock(id);
+        closeModal();
+        toast(`📍 探针「${pr ? (pr.name || pr.hostname) : id}」已召唤到你站的位置并锁定（±3 格内活动）`);
+      }
+      if (b.dataset.pact === 'unlock') {
+        unlockChicken(id);
+        closeModal();
+        toast('🔓 探针鸡已解锁，自由漫游');
       }
       if (b.dataset.pact === 'del') {
         if (!await uiConfirm('移除这个探针？agent 上报会被拒绝，建议同时在目标机执行卸载命令。', { title: '移除探针', okText: '移除', danger: true })) return;
