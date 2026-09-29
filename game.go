@@ -224,6 +224,7 @@ func (h *gameHub) join(c *gameClient) {
 		"chickens": h.chickensSnapshot(),
 		"probeHP":  h.probeHPSnapshot(),
 		"blocks":   h.store.BlocksCopy(),
+		"locks":    h.store.Locks(),
 	})
 	h.broadcast(map[string]any{"t": "join", "player": c.infoWithHP(h)}, c)
 }
@@ -392,6 +393,29 @@ func (h *gameHub) handle(c *gameClient, m map[string]any) {
 			}
 		}
 		h.broadcast(map[string]any{"t": "pos", "id": c.ID, "x": c.X, "z": c.Z, "ry": c.RY, "mv": m["mv"], "flying": c.Flying}, c)
+
+	case "chickenLock":
+		// 管理员召唤并锁定/解锁小鸡（位置持久化，全端同步）
+		if !c.Admin {
+			return
+		}
+		id, _ := m["id"].(string)
+		if id == "" {
+			return
+		}
+		if lock, _ := m["lock"].(bool); lock {
+			x, z := f64(m["x"]), f64(m["z"])
+			if x < -78 || x > 78 || z < -78 || z > 78 {
+				return
+			}
+			h.store.SetLock(id, x, z)
+			h.broadcast(map[string]any{"t": "chickenLock", "id": id, "lock": true, "x": x, "z": z, "by": c.ID}, nil)
+			h.event(fmt.Sprintf("🐔 %s 锁定了一只鸡在 (%v, %v)", c.Name, int(x), int(z)))
+		} else {
+			h.store.ClearLock(id)
+			h.broadcast(map[string]any{"t": "chickenLock", "id": id, "lock": false, "by": c.ID}, nil)
+			h.event(fmt.Sprintf("🔓 %s 解锁了一只鸡", c.Name))
+		}
 
 	case "explode":
 		// TNT 被挖掉 → 服务端爆炸：摧毁半径内方块并广播

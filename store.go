@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -372,6 +373,32 @@ func (s *Store) BlocksCopy() map[string]string {
 func (s *Store) ClearBlocks() error {
 	_, err := s.db.Exec("DELETE FROM blocks")
 	return err
+}
+
+// ---- 小鸡锁定位置（meta 表，key 前缀 lock:） ----
+func (s *Store) SetLock(id string, x, z float64) {
+	s.metaSet("lock:"+id, fmt.Sprintf("%g,%g", x, z))
+}
+func (s *Store) ClearLock(id string) {
+	s.db.Exec("DELETE FROM meta WHERE k=?", "lock:"+id)
+}
+func (s *Store) Locks() map[string]map[string]float64 {
+	out := map[string]map[string]float64{}
+	rows, err := s.db.Query("SELECT k,v FROM meta WHERE k LIKE 'lock:%'")
+	if err != nil {
+		return out
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var k, v string
+		if rows.Scan(&k, &v) == nil {
+			var x, z float64
+			if _, err := fmt.Sscanf(v, "%f,%f", &x, &z); err == nil {
+				out[strings.TrimPrefix(k, "lock:")] = map[string]float64{"x": x, "z": z}
+			}
+		}
+	}
+	return out
 }
 
 func (s *Store) BlockCount() int {

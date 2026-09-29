@@ -267,6 +267,7 @@ function onGameMsg(m) {
       for (const [id, st] of Object.entries(m.chickens || {})) state.chickenHP.set(id, st);
       for (const [id, st] of Object.entries(m.probeHP || {})) state.probeHP.set(id, st);
       for (const [k, v] of Object.entries(m.blocks || {})) applyRemoteBlock(k, v, false);
+      for (const [id, a] of Object.entries(m.locks || {})) farm.chickenLocks.set(id, { x: a.x, z: a.z });
       setMyModel(m.admin);
       if (state.myHP.down) showDeath('');
       if (m.admin) loadAdminData(); else loadPublicFarm();
@@ -347,6 +348,23 @@ function onGameMsg(m) {
     }
     case 'block': applyRemoteBlock(`${m.x},${m.y},${m.z}`, m.op === 'del' ? '-' : m.type, true); break;
     case 'clearblocks': clearAllBlocksLocal(); break;
+    case 'chickenLock': {
+      const c = farm.chickenById.get(m.id);
+      if (m.lock) {
+        farm.chickenLocks.set(m.id, { x: m.x, z: m.z });
+        if (c) { // 召唤：立即传送到锁定位置
+          c.position.set(m.x, groundYAt(m.x, m.z), m.z);
+          if (c.userData.wander) { c.userData.wander.stop = false; c.userData.wander.fleeing = 0; }
+        }
+        if (m.by === state.me?.id) toast('🐔 已召唤并锁定在当前位置（活动范围 ±3 格）');
+        else pushEvent(`管理员锁定了一只鸡的位置`);
+      } else {
+        farm.chickenLocks.delete(m.id);
+        if (m.by === state.me?.id) toast('🔓 已解锁，小鸡自由漫游');
+      }
+      farm.updateLabels(true);
+      break;
+    }
     case 'blocks':
       // skill API 批量方块（分帧广播，不播放置音效避免刷屏）
       for (const b of (m.ops || [])) applyRemoteBlock(`${b.x},${b.y},${b.z}`, b.op === 'del' ? '-' : b.type, false);
@@ -577,7 +595,7 @@ const farm = {
   weapon: 'peck', aiming: false,
   flying: false, lastSpaceTap: 0, leftHeld: false, mining: null, buildHold: null, noPlaceUntilUp: false,
   arrows: [], fx: [],
-  blocks: new Map(), colliders: [],
+  blocks: new Map(), colliders: [], chickenLocks: new Map(), // id → {x,z} 管理员锁定位置
   buildType: 'dirt',
   cooldown: 0, pointerLocked: false, isTouch: false,
   joyVec: { x: 0, y: 0 }, mineHold: null, leftDown: null, drag: null,
@@ -1009,7 +1027,7 @@ farm.syncChickens = function () {
       const rad = 5 + (i % 4) * 5 + Math.random() * 3;
       c.position.set(Math.cos(ang) * rad, 0, Math.sin(ang) * rad);
       c.userData.server = s;
-      c.userData.wander = { dir: Math.random() * Math.PI * 2, timer: Math.random() * 3, speed: .7 + Math.random() * .7, fleeing: 0, stop: false };
+      c.userData.wander = { dir: Math.random() * Math.PI * 2, timer: Math.random() * 3, speed: 1.6 + Math.random() * 1.0, fleeing: 0, stop: false };
       farm.scene.add(c);
       farm.chickens.push(c);
       farm.chickenById.set(s.id, c);
@@ -1049,7 +1067,7 @@ function syncProbeChickens() {
       c.position.set(Math.cos(ang) * (FENCE - 4), 0, Math.sin(ang) * (FENCE - 4));
       c.userData.probe = pr;
       c.userData.isProbe = true;
-      c.userData.wander = { dir: Math.random() * Math.PI * 2, timer: Math.random() * 3, speed: .5, fleeing: 0, stop: false };
+      c.userData.wander = { dir: Math.random() * Math.PI * 2, timer: Math.random() * 3, speed: 1.0, fleeing: 0, stop: false };
       farm.scene.add(c);
       farm.chickens.push(c);
       farm.probeById.set(pr.id, c);
@@ -1094,7 +1112,7 @@ farm.updateLabels = function (force) {
     if (!el || !c) continue;
     const st = state.statuses.get(s.id);
     const hpst = state.chickenHP.get(s.id) || { hp: chickenMaxHP, down: false };
-    const html = `<span class="nm2">${esc(s.name)}${st === 'bad' ? ' 💤' : ''}</span><br>${hpst.down ? '<span class="pdown">💀 倒地</span>' : hearts(hpst.hp, chickenMaxHP)}`;
+    const html = `<span class="nm2">${farm.chickenLocks.has(s.id) ? '📍' : ''}${esc(s.name)}${st === 'bad' ? ' 💤' : ''}</span><br>${hpst.down ? '<span class="pdown">💀 倒地</span>' : hearts(hpst.hp, chickenMaxHP)}`;
     const cls = 'sv-label sm' + (hpst.down ? ' down' : '');
     if (force || el.dataset.html !== html) { el.dataset.html = html; el.className = cls; el.innerHTML = html; }
   }
@@ -1210,6 +1228,7 @@ function exitPointerLock() {
 }
 document.addEventListener('pointerlockchange', () => {
   farm.pointerLocked = !!document.pointerLockElement;
+  if (farm.isTouch) { $('#lockHint').classList.add('hidden'); return; } // 触屏永不弹锁定提示
   $('#lockHint').classList.toggle('hidden', farm.pointerLocked);
 });
 
@@ -1217,6 +1236,10 @@ function bindFarmInput(canvas) {
   farm.isTouch = matchMedia('(pointer: coarse)').matches;
   if (farm.isTouch) {
     $('#joystick').classList.remove('hidden');
+    // 触屏：不显示任何操作提示，也不需要鼠标锁定
+    $('#lockHint').classList.add('hidden');
+    $('#hudHint').classList.add('hidden');
+    document.body.classList.add('touch-mode');
     initJoystick();
   } else {
     $('#lockHint').classList.remove('hidden');
@@ -1227,8 +1250,8 @@ function bindFarmInput(canvas) {
     if (e.code === 'KeyE') { e.preventDefault(); openAdmin(); return; }
     if (e.code === 'KeyQ') { cycleWeapon(1); return; }
     if (e.code === 'KeyF') { interactNear(); return; }
-    if (e.code === 'BracketLeft') { gotoPage(curPage() - 1); return; }
-    if (e.code === 'BracketRight') { gotoPage(curPage() + 1); return; }
+    if (e.code === 'BracketLeft' || e.code === 'ArrowLeft') { e.preventDefault(); gotoPage(curPage() - 1); return; }
+    if (e.code === 'BracketRight' || e.code === 'ArrowRight') { e.preventDefault(); gotoPage(curPage() + 1); return; }
     if (e.code === 'Space') {
       e.preventDefault();
       farm.keys.add('Space');          // 飞行上升需要
@@ -1255,7 +1278,8 @@ function bindFarmInput(canvas) {
   canvas.addEventListener('wheel', e => {
     if (!$('#app').classList.contains('hidden')) {
       e.preventDefault();
-      gotoPage(curPage() + (e.deltaY > 0 ? 1 : -1));
+      // 滚轮 = 视野远近（第三人称相机距离）；翻页改用 ← → 方向键或 [ ]
+      farm.dist = Math.max(5, Math.min(18, farm.dist + (e.deltaY > 0 ? 1 : -1)));
     }
   }, { passive: false });
 
@@ -1875,15 +1899,41 @@ function applyRemoteBlock(key, val, fromWS) {
 function interactNear() {
   if (!$('#terminal').classList.contains('hidden') || !$('#modal').classList.contains('hidden')) return;
   if (!state.admin) return;
-  let best = null, bd = 4.5;
+  let bestDown = null, bestLive = null, bd = 4.5, bl = 4.5;
   for (const c of farm.chickens) {
     if (c.userData.isProbe) continue;
     const d = c.position.distanceTo(farm.pos);
-    if (d >= bd) continue;
-    if (c.userData.down) { best = c; bd = d; }
+    if (c.userData.down) { if (d < bd) { bestDown = c; bd = d; } }
+    else if (d < bl) { bestLive = c; bl = d; }
   }
-  if (!best) return;
-  openChickenMenu(best);
+  if (bestDown) return openChickenMenu(bestDown);
+  if (bestLive) return openLockMenu(bestLive);
+  toast('附近没有可交互的鸡（F 键：召唤/锁定 4.5 格内的小鸡）');
+}
+/* 管理员：召唤并锁定 / 解锁小鸡 */
+function openLockMenu(c) {
+  const s = c.userData.server;
+  if (!s) return;
+  const locked = farm.chickenLocks.get(s.id);
+  exitPointerLock();
+  openModal(`
+    <button class="modal-close">×</button>
+    <h2>🐔 ${esc(s.name)}</h2>
+    <div class="notice">${locked
+      ? `已锁定在 (${locked.x.toFixed(0)}, ${locked.z.toFixed(0)})，活动范围 ±3 格`
+      : '未锁定 · 自由漫游（速度已提升）'}</div>
+    <div class="modal-actions" style="justify-content:space-between">
+      <button class="mc-btn" id="ckSummon">📍 召唤到我身边并锁定</button>
+      <div style="display:flex;gap:8px">
+        ${locked ? '<button class="mc-btn" id="ckUnlock">🔓 解锁</button>' : ''}
+      </div>
+    </div>`);
+  $('#ckSummon').onclick = () => {
+    gsend({ t: 'chickenLock', id: s.id, lock: true, x: +farm.pos.x.toFixed(1), z: +farm.pos.z.toFixed(1) });
+    closeModal();
+  };
+  const un = $('#ckUnlock');
+  if (un) un.onclick = () => { gsend({ t: 'chickenLock', id: s.id, lock: false }); closeModal(); };
 }
 function openChickenMenu(c) {
   const s = c.userData.server;
@@ -2036,10 +2086,10 @@ function tick() {
 
   const k = farm.keys;
   let mx = farm.joyVec.x, mz = farm.joyVec.y;
-  if (k.has('KeyW') || k.has('ArrowUp')) mz -= 1;
-  if (k.has('KeyS') || k.has('ArrowDown')) mz += 1;
-  if (k.has('KeyA') || k.has('ArrowLeft')) mx -= 1;
-  if (k.has('KeyD') || k.has('ArrowRight')) mx += 1;
+  if (k.has('KeyW')) mz -= 1;
+  if (k.has('KeyS')) mz += 1;
+  if (k.has('KeyA')) mx -= 1;
+  if (k.has('KeyD')) mx += 1;
   const sprint = k.has('ShiftLeft') || k.has('ShiftRight');
   const speed = sprint ? 9 : 5;
   const moving = !myDown && (Math.abs(mx) > .1 || Math.abs(mz) > .1);
@@ -2200,16 +2250,22 @@ function tick() {
     if (w.fleeing > 0) w.fleeing -= dt;
     w.timer -= dt;
     if (w.timer <= 0) { w.dir = Math.random() * Math.PI * 2; w.timer = 2 + Math.random() * 4; w.stop = Math.random() < .3; }
+    const lock = !c.userData.isProbe && c.userData.server ? farm.chickenLocks.get(c.userData.server.id) : null;
     const toFarmer = _v.copy(farm.pos).sub(c.position);
     const dFar = toFarmer.length();
     let spd = w.stop && w.fleeing <= 0 ? 0 : w.speed;
     let dir = w.dir;
-    if (!myDown && (dFar < 3 || w.fleeing > 0)) {
+    if (lock) {
+      // 锁定模式：只在锚点 ±3 格内活动，越界就往回走
+      const dx = c.position.x - lock.x, dz = c.position.z - lock.z;
+      const dAnchor = Math.hypot(dx, dz);
+      if (dAnchor > 2.2) { dir = Math.atan2(-dx, -dz); spd = Math.max(spd, 2.2); w.stop = false; }
+    } else if (!myDown && (dFar < 3 || w.fleeing > 0)) {
       dir = Math.atan2(-toFarmer.x, -toFarmer.z);
       spd = w.fleeing > 0 ? 4.2 : 2.6;
       w.stop = false;
     }
-    for (const [, p] of state.players) {
+    if (!lock) for (const [, p] of state.players) {
       const d2 = p.model.position.distanceTo(c.position);
       if (d2 < 2.5) {
         dir = Math.atan2(c.position.x - p.model.position.x, c.position.z - p.model.position.z);
@@ -2230,6 +2286,14 @@ function tick() {
     }
     c.position.x = Math.max(-GROUND + 1.5, Math.min(GROUND - 1.5, c.position.x));
     c.position.z = Math.max(-GROUND + 1.5, Math.min(GROUND - 1.5, c.position.z));
+    if (!c.userData.isProbe && c.userData.server) {
+      const lk = farm.chickenLocks.get(c.userData.server.id);
+      if (lk) { // 硬约束：绝不超出锚点 3 格
+        const dx = c.position.x - lk.x, dz = c.position.z - lk.z;
+        const d = Math.hypot(dx, dz);
+        if (d > 3) { c.position.x = lk.x + dx / d * 3; c.position.z = lk.z + dz / d * 3; }
+      }
+    }
     // 贴合建筑顶面行走；遇到 2 格以上的墙就掉头
     if (!c.userData.down) {
       const gy = groundYAt(c.position.x, c.position.z);
