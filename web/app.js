@@ -1899,41 +1899,23 @@ function applyRemoteBlock(key, val, fromWS) {
 function interactNear() {
   if (!$('#terminal').classList.contains('hidden') || !$('#modal').classList.contains('hidden')) return;
   if (!state.admin) return;
-  let bestDown = null, bestLive = null, bd = 4.5, bl = 4.5;
+  let best = null, bd = 4.5;
   for (const c of farm.chickens) {
     if (c.userData.isProbe) continue;
     const d = c.position.distanceTo(farm.pos);
-    if (c.userData.down) { if (d < bd) { bestDown = c; bd = d; } }
-    else if (d < bl) { bestLive = c; bl = d; }
+    if (d >= bd) continue;
+    if (c.userData.down) { best = c; bd = d; }
   }
-  if (bestDown) return openChickenMenu(bestDown);
-  if (bestLive) return openLockMenu(bestLive);
-  toast('附近没有可交互的鸡（F 键：召唤/锁定 4.5 格内的小鸡）');
+  if (!best) return;
+  openChickenMenu(best);
 }
-/* 管理员：召唤并锁定 / 解锁小鸡 */
-function openLockMenu(c) {
-  const s = c.userData.server;
-  if (!s) return;
-  const locked = farm.chickenLocks.get(s.id);
-  exitPointerLock();
-  openModal(`
-    <button class="modal-close">×</button>
-    <h2>🐔 ${esc(s.name)}</h2>
-    <div class="notice">${locked
-      ? `已锁定在 (${locked.x.toFixed(0)}, ${locked.z.toFixed(0)})，活动范围 ±3 格`
-      : '未锁定 · 自由漫游（速度已提升）'}</div>
-    <div class="modal-actions" style="justify-content:space-between">
-      <button class="mc-btn" id="ckSummon">📍 召唤到我身边并锁定</button>
-      <div style="display:flex;gap:8px">
-        ${locked ? '<button class="mc-btn" id="ckUnlock">🔓 解锁</button>' : ''}
-      </div>
-    </div>`);
-  $('#ckSummon').onclick = () => {
-    gsend({ t: 'chickenLock', id: s.id, lock: true, x: +farm.pos.x.toFixed(1), z: +farm.pos.z.toFixed(1) });
-    closeModal();
-  };
-  const un = $('#ckUnlock');
-  if (un) un.onclick = () => { gsend({ t: 'chickenLock', id: s.id, lock: false }); closeModal(); };
+/* 管理员：召唤并锁定 / 解锁小鸡（管理面板按钮触发，召唤到管理员当前位置） */
+function summonAndLock(id) {
+  if (!farm.inited) { toast('先进入农场再召唤'); return; }
+  gsend({ t: 'chickenLock', id, lock: true, x: +farm.pos.x.toFixed(1), z: +farm.pos.z.toFixed(1) });
+}
+function unlockChicken(id) {
+  gsend({ t: 'chickenLock', id, lock: false });
 }
 function openChickenMenu(c) {
   const s = c.userData.server;
@@ -2770,6 +2752,8 @@ function openAdmin() {
       <td><div class="row-actions">
         <button class="ic-btn" data-act="term" title="打开终端">▶</button>
         <button class="ic-btn" data-act="heal" title="满血复活">❤</button>
+        <button class="ic-btn" data-act="summon" title="${farm.chickenLocks.has(s.id) ? '重新召唤到我站的位置（已锁定 ±3 格）' : '召唤到我站的位置并锁定'}">📍</button>
+        ${farm.chickenLocks.has(s.id) ? '<button class="ic-btn" data-act="unlock" title="解锁，恢复自由漫游">🔓</button>' : ''}
         <button class="ic-btn" data-act="edit" title="编辑">✎</button>
         <button class="ic-btn danger" data-act="del" title="删除">🗑</button>
       </div></td>
@@ -2828,6 +2812,16 @@ function openAdmin() {
       if (b.dataset.act === 'heal') {
         reviveChicken(id);
         sfx('pop'); toast(`${s.name} 已复活`); openAdmin();
+      }
+      if (b.dataset.act === 'summon') {
+        summonAndLock(id);
+        closeModal();
+        toast(`📍 ${s.name} 已召唤到你站的位置并锁定（±3 格内活动）`);
+      }
+      if (b.dataset.act === 'unlock') {
+        unlockChicken(id);
+        closeModal();
+        toast(`🔓 ${s.name} 已解锁，自由漫游`);
       }
       if (b.dataset.act === 'edit') openForm(s);
       if (b.dataset.act === 'del') {
