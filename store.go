@@ -368,6 +368,12 @@ func (s *Store) BlocksCopy() map[string]string {
 	return out
 }
 
+// ClearBlocks 清空全部方块（管理员一键清图）
+func (s *Store) ClearBlocks() error {
+	_, err := s.db.Exec("DELETE FROM blocks")
+	return err
+}
+
 func (s *Store) BlockCount() int {
 	var n int
 	s.db.QueryRow("SELECT COUNT(*) FROM blocks").Scan(&n)

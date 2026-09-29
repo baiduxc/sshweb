@@ -24,7 +24,7 @@ import (
 //go:embed all:web
 var embeddedWeb embed.FS
 
-var version = "0.5.8"
+var version = "0.5.9"
 
 func newID() string {
 	b := make([]byte, 8)
@@ -84,6 +84,23 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 func (a *App) authOK(r *http.Request) bool {
 	c, err := r.Cookie("sshweb_session")
 	return err == nil && a.sessions.valid(c.Value)
+}
+
+// POST /api/admin/clearblocks — 清除全部方块（需管理员登录），并广播给所有在线客户端
+func (a *App) handleClearBlocks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		writeJSON(w, 405, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if err := a.store.ClearBlocks(); err != nil {
+		writeJSON(w, 500, map[string]string{"error": err.Error()})
+		return
+	}
+	if a.game != nil {
+		a.game.broadcast(map[string]any{"t": "clearblocks"}, nil)
+		a.game.event("🧹 管理员清除了地图上所有方块")
+	}
+	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
 func (a *App) require(next http.HandlerFunc) http.HandlerFunc {
@@ -330,6 +347,7 @@ func main() {
 	mux.HandleFunc("/api/probe/unlockpass", app.handleProbeUnlockPass)
 	mux.HandleFunc("/api/probes/public", app.handleProbesPublic)
 	mux.HandleFunc("/api/keys", app.require(app.handleAPIKeys))
+	mux.HandleFunc("/api/admin/clearblocks", app.require(app.handleClearBlocks))
 	mux.HandleFunc("/api/skill/blocks", app.handleSkillBlocks)
 	mux.HandleFunc("/api/skill/player", app.handleSkillPlayer)
 	mux.HandleFunc("/api/skill/state", app.handleSkillState)

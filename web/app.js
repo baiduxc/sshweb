@@ -346,6 +346,7 @@ function onGameMsg(m) {
       break;
     }
     case 'block': applyRemoteBlock(`${m.x},${m.y},${m.z}`, m.op === 'del' ? '-' : m.type, true); break;
+    case 'clearblocks': clearAllBlocksLocal(); break;
     case 'blocks':
       // skill API 批量方块（分帧广播，不播放置音效避免刷屏）
       for (const b of (m.ops || [])) applyRemoteBlock(`${b.x},${b.y},${b.z}`, b.op === 'del' ? '-' : b.type, false);
@@ -1821,6 +1822,16 @@ function instRemove(key) {
   m.instanceMatrix.needsUpdate = true;
   inst.keyInfo.delete(key);
 }
+function clearAllBlocksLocal() {
+  for (const [, m] of inst.meshes) {
+    m.count = 0;
+    m.instanceMatrix.needsUpdate = true;
+  }
+  for (const [, slots] of inst.slots) slots.length = 0;
+  inst.keyInfo.clear();
+  farm.blocks.clear();
+  colIndex.clear();
+}
 const colIndex = new Map(); // "x,z" → Set(key)
 function colAdd(x, z, key) {
   const k = x + ',' + z;
@@ -2708,6 +2719,7 @@ function openAdmin() {
       <button class="mc-btn sm" id="admJoin">📡 部署公开探针</button>
       <button class="mc-btn sm" id="admKeys">🤖 AI Skill API Key</button>
       <button class="mc-btn sm" id="admPw">修改管理密码</button>
+      <button class="mc-btn sm danger" id="admClear" style="background:#a33;border-color:#822">🧹 清除所有方块</button>
     </div>
     ${state.servers.length ? `<table class="sv-table">
       <thead><tr><th>服务器</th><th>区域</th><th>状态</th><th style="text-align:right">操作</th></tr></thead>
@@ -2719,6 +2731,13 @@ function openAdmin() {
   $('#admJoin').onclick = () => openJoinModal();
   $('#admKeys').onclick = () => openKeysModal();
   $('#admPw').onclick = openPwModal;
+  $('#admClear').onclick = async () => {
+    if (!await uiConfirm(`清除地图上全部 ${farm.blocks.size} 个方块？此操作不可恢复！`, { title: '清除所有方块', okText: '全部清除', danger: true })) return;
+    await api('api/admin/clearblocks', { method: 'POST' });
+    clearAllBlocksLocal();
+    toast('已清除所有方块');
+    closeModal();
+  };
   $$('#modal [data-pact]').forEach(b => {
     b.onclick = async () => {
       const id = b.closest('tr').dataset.pid;
